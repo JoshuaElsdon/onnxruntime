@@ -259,8 +259,8 @@ class QnnBackendManager : public std::enable_shared_from_this<QnnBackendManager>
     bool is_npu_backend = IsNpuBackend(GetQnnBackendType());
     std::string target = is_npu_backend ? "HTP" : "CPU";
     Qnn_ErrorHandle_t result = qnn_interface_.backendRegisterOpPackage(backend_handle_,
-                                                                       "libQnnMatmul2BitOpPackage.so",      // need to make it configurable
-                                                                       "Matmul2BitOpPackageInterfaceProvider", // need to make it configurable
+                                                                       "libQnnMatMulNBits.so",      // need to make it configurable
+                                                                       "MatMulNBitsInterfaceProvider", // need to make it configurable
                                                                        target.c_str());
     if (result != QNN_SUCCESS) {
       switch (result) {

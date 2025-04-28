@@ -97,6 +97,7 @@ function(setup_mlas_source_for_windows)
         ${MLAS_SRC_DIR}/rotary_embedding_kernel_neon_fp16.cpp
         ${MLAS_SRC_DIR}/hgemm_kernel_neon.cpp
         ${MLAS_SRC_DIR}/halfgemm_kernel_neon_fp16.cpp
+        ${MLAS_SRC_DIR}/sqternarybitgemm_kernel_fallback.cpp
       )
 
       set(mlas_platform_preprocess_srcs
@@ -588,7 +589,7 @@ else()
           ${MLAS_SRC_DIR}/intrinsics/avx2/qladd_avx2.cpp
           ${MLAS_SRC_DIR}/intrinsics/avx2/qdwconv_avx2.cpp
           ${MLAS_SRC_DIR}/sqnbitgemm_kernel_avx2.cpp
-          ${MLAS_SRC_DIR}/sqnbitgemm_bitnet_kernel_avx2.cpp          
+          ${MLAS_SRC_DIR}/sqnbitgemm_bitnet_kernel_avx2.cpp
           ${MLAS_SRC_DIR}/sqternarybitgemm_kernel_avx2.cpp
         )
         if(CMAKE_CXX_COMPILER_VERSION GREATER_EQUAL 13.1 AND NOT(APPLE))

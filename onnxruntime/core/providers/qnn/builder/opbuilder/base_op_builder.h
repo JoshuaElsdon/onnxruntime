@@ -162,7 +162,7 @@ class BaseOpBuilder : public IOpBuilder {
         {"Transpose", QNN_OP_TRANSPOSE},
         {"GridSample", QNN_OP_GRID_SAMPLE},
         {"LpNormalization", QNN_OP_L2_NORM},
-        ("Matmul2Bit", "Matmul2Bit"),
+        {"MatMulNBits", "MatMulNBits"},
 
         {"DequantizeLinear", QNN_OP_DEQUANTIZE},
         {"QuantizeLinear", QNN_OP_QUANTIZE},
