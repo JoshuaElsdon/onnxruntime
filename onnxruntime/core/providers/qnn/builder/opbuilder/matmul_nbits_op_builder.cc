@@ -41,18 +41,41 @@ Status MatMulNBitsOpBuilder::ProcessInputs(QnnModelWrapper& qnn_model_wrapper, c
                                            bool do_op_validation) const {
   ORT_UNUSED_PARAMETER(do_op_validation);
   LOGS(logger, INFO) << "MatMulNBitsOpBuilder::ProcessInputs() called.";
+
   const auto& inputs = node_unit.Inputs();
 
-  for (const auto& input_def : inputs) {
+  // Mapping from ONNX node input name to actual quantized tensor to use
+  for (size_t i = 0; i < inputs.size(); ++i) {
+    const auto& input_def = inputs[i];
     const std::string& input_name = input_def.node_arg.Name();
-    if (!qnn_model_wrapper.IsQnnTensorWrapperExist(input_name)) {
-      QnnTensorWrapper tensor_wrapper;
-      ORT_RETURN_IF_ERROR(qnn_model_wrapper.MakeTensorWrapper(input_def, tensor_wrapper));
-      ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(tensor_wrapper)), "Failed to add tensor: " + input_name);
-    } else {
-      LOGS(logger, VERBOSE) << "Tensor already added, skip it: " << input_name;
+
+    std::string actual_input_name = input_name;
+
+    // If this is a DequantizeLinear node output, try to trace back to the original quantized tensor
+    const Node* producer = qnn_model_wrapper.GetGraphViewer().GetProducerNode(input_name);
+    if (producer && producer->OpType() == "DequantizeLinear") {
+      const auto& quant_input_defs = producer->InputDefs();
+      if (!quant_input_defs.empty()) {
+        // Use the input to DequantizeLinear (i.e., the quantized tensor)
+        actual_input_name = quant_input_defs[0]->Name();
+        LOGS(logger, INFO) << "Replacing input " << input_name << " with quantized tensor " << actual_input_name;
+      }
     }
-    input_names.emplace_back(input_name);
+
+    // Add tensor if not already in QNN model
+    if (!qnn_model_wrapper.IsQnnTensorWrapperExist(actual_input_name)) {
+      TensorInfo tensor_info;
+      ORT_RETURN_IF_ERROR(qnn_model_wrapper.GetTensorInfo(input_def, tensor_info));
+
+      QnnTensorWrapper tensor_wrapper;
+      ORT_RETURN_IF_ERROR(qnn_model_wrapper.MakeTensorWrapper(tensor_info, actual_input_name, tensor_wrapper));
+      ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(tensor_wrapper)),
+                        "Failed to add tensor: " + actual_input_name);
+    } else {
+      LOGS(logger, VERBOSE) << "Tensor already added, skip it: " << actual_input_name;
+    }
+
+    input_names.emplace_back(actual_input_name);
   }
 
   return Status::OK();
@@ -67,25 +90,24 @@ Status MatMulNBitsOpBuilder::ProcessAttributesAndOutputs(QnnModelWrapper& qnn_mo
   const auto& outputs = node_unit.Outputs();
   const std::string& output_name = outputs[0].node_arg.Name();
 
-  TensorInfo output_info;
-  ORT_RETURN_IF_ERROR(qnn_model_wrapper.GetTensorInfo(outputs[0], output_info));
 
-  // Convert shape to uint32_t
-  std::vector<uint32_t> output_shape_uint32;
-  output_shape_uint32.reserve(output_info.shape.size());
-  for (auto dim : output_info.shape) {
-    output_shape_uint32.push_back(static_cast<uint32_t>(dim));
-  }
+  TensorInfo output_info{};
+  ORT_RETURN_IF_ERROR(qnn_model_wrapper.GetTensorInfo(node_unit.Outputs()[0], output_info));
+  std::vector<uint32_t> op_output_shape = output_info.shape;
+  QnnQuantParamsWrapper op_output_quant_param = output_info.quant_param.Copy();
+  Qnn_DataType_t qnn_data_type = QNN_DATATYPE_UFIXED_POINT_16;
+
 
   QnnTensorWrapper output_tensor_wrapper(output_name,
-                                         QNN_TENSOR_TYPE_APP_READ,  // graph output
-                                         output_info.qnn_data_type,
-                                         output_info.quant_param.Copy(),
-                                         std::move(output_shape_uint32));
+                                         QNN_TENSOR_TYPE_APP_READ,
+                                         qnn_data_type,
+                                         std::move(op_output_quant_param),
+                                         std::move(op_output_shape));
 
-  ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(output_tensor_wrapper)), "Failed to add output tensor.");
+  ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(output_tensor_wrapper)),
+                    "Failed to add output tensor.");
 
-  int32_t bits = 2, block_size = 64, K = 3072, N = 3072; // hard coded for now.
+  int32_t bits = 2, block_size = 64, K = 3072, N = 3072;  // hard coded for now.
 
   std::vector<std::string> param_tensor_names;
 
@@ -136,7 +158,7 @@ Status MatMulNBitsOpBuilder::ProcessAttributesAndOutputs(QnnModelWrapper& qnn_mo
   ORT_RETURN_IF_NOT(qnn_model_wrapper.CreateQnnNode(
                         utils::GetNodeName(node_unit),
                         GetQnnOpPackageName("MatMulNBits"),  // <== correct package name
-                        "MatMulNBits",  // <== correct op name
+                        "MatMulNBits",                       // <== correct op name
                         std::move(input_names),
                         {output_name},
                         std::move(param_tensor_names),
