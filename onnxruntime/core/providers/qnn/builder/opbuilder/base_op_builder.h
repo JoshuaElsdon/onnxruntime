@@ -162,7 +162,6 @@ class BaseOpBuilder : public IOpBuilder {
         {"Transpose", QNN_OP_TRANSPOSE},
         {"GridSample", QNN_OP_GRID_SAMPLE},
         {"LpNormalization", QNN_OP_L2_NORM},
-        {"MatMulNBits", "MatMulNBits"},
 
         {"DequantizeLinear", QNN_OP_DEQUANTIZE},
         {"QuantizeLinear", QNN_OP_QUANTIZE},
@@ -206,6 +205,7 @@ class BaseOpBuilder : public IOpBuilder {
         {"LayerNormalization", QNN_OP_LAYER_NORM},
 
         {"LRN", QNN_OP_LRN},
+        {"MatMulNBits", "MatMulNBits"},
 
         {"Pad", QNN_OP_PAD},
 
@@ -217,7 +217,7 @@ class BaseOpBuilder : public IOpBuilder {
 
   static const std::string& GetQnnOpPackageName(const std::string& onnx_op_type) {
     static const std::unordered_map<std::string, std::string> qnn_op_type_to_op_package_name = {
-        {"Matmul2Bit", "Matmul2BitOpPackage"}};
+        {"MatmulNBits", "MatmulNBitsOpPackage"}};
 
     static const std::string default_qnn_package_name(QNN_OP_PACKAGE_NAME_QTI_AISW);
     auto it = qnn_op_type_to_op_package_name.find(onnx_op_type);

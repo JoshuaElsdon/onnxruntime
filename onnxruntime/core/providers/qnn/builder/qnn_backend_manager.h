@@ -258,8 +258,11 @@ class QnnBackendManager : public std::enable_shared_from_this<QnnBackendManager>
   Status LoadOpPackage() {
     bool is_npu_backend = IsNpuBackend(GetQnnBackendType());
     std::string target = is_npu_backend ? "HTP" : "CPU";
+
+    std::string lib_path = "C:\\\\libQnnMatMulNBits.so";
+    LOGS(*logger_, INFO) << "Attempting to open op package: " << lib_path;
     Qnn_ErrorHandle_t result = qnn_interface_.backendRegisterOpPackage(backend_handle_,
-                                                                       "libQnnMatMulNBits.so",      // need to make it configurable
+                                                                        lib_path.c_str(),      // need to make it configurable
                                                                        "MatMulNBitsInterfaceProvider", // need to make it configurable
                                                                        target.c_str());
     if (result != QNN_SUCCESS) {
