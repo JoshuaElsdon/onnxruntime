@@ -67,10 +67,27 @@ Status MatMulNBitsOpBuilder::ProcessInputs(QnnModelWrapper& qnn_model_wrapper, c
       TensorInfo tensor_info;
       ORT_RETURN_IF_ERROR(qnn_model_wrapper.GetTensorInfo(input_def, tensor_info));
 
+      // Patch dummy quantization if needed (e.g., for B or zero_points)
+      if (actual_input_name == "B" || actual_input_name == "zero_points") {
+        Qnn_QuantizeParams_t dummy_qparams = QNN_QUANTIZE_PARAMS_INIT;
+        dummy_qparams.encodingDefinition = QNN_DEFINITION_UNDEFINED;
+        dummy_qparams.quantizationEncoding = QNN_QUANTIZATION_ENCODING_UNDEFINED;
+        ORT_THROW_IF_ERROR(tensor_info.quant_param.Init(dummy_qparams));
+      }
+
       QnnTensorWrapper tensor_wrapper;
       ORT_RETURN_IF_ERROR(qnn_model_wrapper.MakeTensorWrapper(tensor_info, actual_input_name, tensor_wrapper));
       ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(tensor_wrapper)),
                         "Failed to add tensor: " + actual_input_name);
+
+      if ((actual_input_name == "B" || actual_input_name == "zero_points") &&
+          tensor_info.qnn_data_type == QNN_DATATYPE_UINT_8) {
+        std::string casted_name = actual_input_name + "_casted_int32";
+        LOGS(logger, INFO) << "Casting tensor " << actual_input_name << " to int32 as " << casted_name;
+
+        ORT_RETURN_IF_ERROR(qnn_model_wrapper.CastStaticTensorToInt32(actual_input_name, casted_name));
+        actual_input_name = casted_name;
+      }
     } else {
       LOGS(logger, VERBOSE) << "Tensor already added, skip it: " << actual_input_name;
     }
@@ -84,81 +101,106 @@ Status MatMulNBitsOpBuilder::ProcessInputs(QnnModelWrapper& qnn_model_wrapper, c
 Status MatMulNBitsOpBuilder::ProcessAttributesAndOutputs(QnnModelWrapper& qnn_model_wrapper,
                                                          const NodeUnit& node_unit,
                                                          std::vector<std::string>&& input_names,
-                                                         const logging::Logger& /*logger*/,
+                                                         const logging::Logger& logger,
                                                          bool do_op_validation) const {
-  LOGS_DEFAULT(INFO) << "MatMulNBitsOpBuilder::ProcessAttributesAndOutputs() called.";
-  const auto& outputs = node_unit.Outputs();
-  const std::string& output_name = outputs[0].node_arg.Name();
+  LOGS(logger, INFO) << "MatMulNBitsOpBuilder::ProcessAttributesAndOutputs() called.";
 
+  const GraphViewer& graph_viewer = qnn_model_wrapper.GetGraphViewer();
 
-  TensorInfo output_info{};
-  ORT_RETURN_IF_ERROR(qnn_model_wrapper.GetTensorInfo(node_unit.Outputs()[0], output_info));
-  std::vector<uint32_t> op_output_shape = output_info.shape;
-  QnnQuantParamsWrapper op_output_quant_param = output_info.quant_param.Copy();
+  // Step 1: Identify output name
+  const auto& output_def = node_unit.Outputs()[0];
+  std::string input_to_quantize = output_def.node_arg.Name();  // typically "Y_QuantizeLinear_Input"
+  std::string output_name = input_to_quantize;                 // default unless QuantizeLinear is found
+  const Node* quantize_node = nullptr;
+
+  // Step 2: Look for QuantizeLinear node that consumes this output
+  for (const auto& node : graph_viewer.Nodes()) {
+    if (node.OpType() == "QuantizeLinear" &&
+        !node.InputDefs().empty() &&
+        node.InputDefs()[0]->Name() == input_to_quantize) {
+      quantize_node = &node;
+      output_name = node.OutputDefs()[0]->Name();  // typically "Y_QuantizeLinear_Output"
+      break;
+    }
+  }
+
+  // Step 3: Extract quantization info from QuantizeLinear node
   Qnn_DataType_t qnn_data_type = QNN_DATATYPE_UFIXED_POINT_16;
+  QnnQuantParamsWrapper op_output_quant_param;
+  if (quantize_node) {
+    NodeUnitIODef::QuantParam qp{/*scale=*/*quantize_node->InputDefs()[1]};
+    if (quantize_node->InputDefs().size() > 2) {
+      qp.zero_point = quantize_node->InputDefs()[2];
+    }
+    NodeUnitIODef io_def{*quantize_node->InputDefs()[0], qp};
+    ORT_RETURN_IF_ERROR(op_output_quant_param.Init(qnn_model_wrapper, io_def));
+  } else {
+    return ORT_MAKE_STATUS(ONNXRUNTIME, FAIL, "Missing QuantizeLinear consumer for output: ", input_to_quantize);
+  }
 
+  // Step 4: Get shape from original node output
+  TensorInfo output_info{};
+  ORT_RETURN_IF_ERROR(qnn_model_wrapper.GetTensorInfo(output_def, output_info));
+  std::vector<uint32_t> op_output_shape = output_info.shape;
 
+  // Step 5: Register output tensor under name that DequantizeLinear expects
   QnnTensorWrapper output_tensor_wrapper(output_name,
-                                         QNN_TENSOR_TYPE_APP_READ,
+                                         QNN_TENSOR_TYPE_NATIVE,
                                          qnn_data_type,
                                          std::move(op_output_quant_param),
                                          std::move(op_output_shape));
-
   ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(output_tensor_wrapper)),
                     "Failed to add output tensor.");
 
-  int32_t bits = 2, block_size = 64, K = 3072, N = 3072;  // hard coded for now.
-
+  // Step 6: Scalar parameters
+  int32_t bits = 2, block_size = 64, K = 3072, N = 3072;
   std::vector<std::string> param_tensor_names;
 
-  // bits
-  {
+  auto add_scalar_param = [&](const std::string& name, int32_t value) -> Status {
     Qnn_Scalar_t scalar_param = QNN_SCALAR_INIT;
     scalar_param.dataType = QNN_DATATYPE_INT_32;
-    scalar_param.int32Value = bits;
+    scalar_param.int32Value = value;
+    QnnParamWrapper param(node_unit.Index(), node_unit.Name(), name, scalar_param);
+    param_tensor_names.push_back(param.GetParamTensorName());
 
-    QnnParamWrapper bits_param(node_unit.Index(), node_unit.Name(), "bits", scalar_param);
-    param_tensor_names.push_back(bits_param.GetParamTensorName());
-    qnn_model_wrapper.AddParamWrapper(std::move(bits_param));
+    if (!qnn_model_wrapper.AddParamWrapper(std::move(param))) {
+      return ORT_MAKE_STATUS(ONNXRUNTIME, FAIL, "Failed to add scalar param: ", name);
+    }
+    return Status::OK();
+  };
+
+  ORT_RETURN_IF_ERROR(add_scalar_param("bits", bits));
+  ORT_RETURN_IF_ERROR(add_scalar_param("block_size", block_size));
+  ORT_RETURN_IF_ERROR(add_scalar_param("K", K));
+  ORT_RETURN_IF_ERROR(add_scalar_param("N", N));
+
+  std::string name = utils::GetNodeName(node_unit);
+  std::string package_name = GetQnnOpPackageName("MatMulNBits");
+  std::string op_type = "MatMulNBits";
+
+  // Step 7: Logging
+  LOGS(logger, INFO) << "\n=== MatMulNBits CreateQnnNode Inputs ===";
+  LOGS(logger, INFO) << "Node name       : " << name;
+  LOGS(logger, INFO) << "Package name    : " << package_name;
+  LOGS(logger, INFO) << "Op type         : " << op_type;
+  LOGS(logger, INFO) << "Inputs          :";
+  for (const auto& in : input_names) {
+    LOGS(logger, INFO) << "  - " << in;
   }
-
-  // block_size
-  {
-    Qnn_Scalar_t scalar_param = QNN_SCALAR_INIT;
-    scalar_param.dataType = QNN_DATATYPE_INT_32;
-    scalar_param.int32Value = block_size;
-
-    QnnParamWrapper block_size_param(node_unit.Index(), node_unit.Name(), "block_size", scalar_param);
-    param_tensor_names.push_back(block_size_param.GetParamTensorName());
-    qnn_model_wrapper.AddParamWrapper(std::move(block_size_param));
+  LOGS(logger, INFO) << "Outputs         :";
+  LOGS(logger, INFO) << "  - " << output_name;
+  LOGS(logger, INFO) << "Params          :";
+  for (const auto& param : param_tensor_names) {
+    LOGS(logger, INFO) << "  - " << param;
   }
+  LOGS(logger, INFO) << "Do validation   : " << (do_op_validation ? "true" : "false");
+  LOGS(logger, INFO) << "=========================================\n";
 
-  // K
-  {
-    Qnn_Scalar_t scalar_param = QNN_SCALAR_INIT;
-    scalar_param.dataType = QNN_DATATYPE_INT_32;
-    scalar_param.int32Value = K;
-
-    QnnParamWrapper K_param(node_unit.Index(), node_unit.Name(), "K", scalar_param);
-    param_tensor_names.push_back(K_param.GetParamTensorName());
-    qnn_model_wrapper.AddParamWrapper(std::move(K_param));
-  }
-
-  // N
-  {
-    Qnn_Scalar_t scalar_param = QNN_SCALAR_INIT;
-    scalar_param.dataType = QNN_DATATYPE_INT_32;
-    scalar_param.int32Value = N;
-
-    QnnParamWrapper N_param(node_unit.Index(), node_unit.Name(), "N", scalar_param);
-    param_tensor_names.push_back(N_param.GetParamTensorName());
-    qnn_model_wrapper.AddParamWrapper(std::move(N_param));
-  }
-  // Now create the node
+  // Step 8: Create the fused QNN node
   ORT_RETURN_IF_NOT(qnn_model_wrapper.CreateQnnNode(
-                        utils::GetNodeName(node_unit),
-                        GetQnnOpPackageName("MatMulNBits"),  // <== correct package name
-                        "MatMulNBits",                       // <== correct op name
+                        name,
+                        package_name,
+                        op_type,
                         std::move(input_names),
                         {output_name},
                         std::move(param_tensor_names),
@@ -167,6 +209,5 @@ Status MatMulNBitsOpBuilder::ProcessAttributesAndOutputs(QnnModelWrapper& qnn_mo
 
   return Status::OK();
 }
-
 }  // namespace qnn
 }  // namespace onnxruntime

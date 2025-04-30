@@ -247,6 +247,9 @@ class QnnModelWrapper {
   Status UnpackInitializerData(const ONNX_NAMESPACE::TensorProto& initializer,
                                std::vector<uint8_t>& unpacked_tensor) const;
 
+  Status CastStaticTensorToInt32(const std::string& orig_name,
+                                const std::string& new_name);
+
   QnnBackendType GetQnnBackendType() const { return qnn_backend_type_; }
 
   const GraphViewer& GetGraphViewer() const { return graph_viewer_; }

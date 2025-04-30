@@ -647,5 +647,61 @@ Status QnnModelWrapper::UnpackInitializerData(const ONNX_NAMESPACE::TensorProto&
   return Status::OK();
 }
 
+Status QnnModelWrapper::CastStaticTensorToInt32(const std::string& orig_name,
+                                                const std::string& new_name) {
+  const QnnTensorWrapper& orig_tensor = GetQnnTensorWrapper(orig_name);
+
+  ORT_RETURN_IF_NOT(orig_tensor.GetTensorDataType() == QNN_DATATYPE_UINT_8,
+                    "Expected QNN_DATATYPE_UINT_8, got something else.");
+  ORT_RETURN_IF_NOT(orig_tensor.GetTensorType() == QNN_TENSOR_TYPE_STATIC,
+                    "Expected QNN_TENSOR_TYPE_STATIC for input tensor: ", orig_name);
+
+  std::vector<uint32_t> shape_copy = orig_tensor.GetTensorDims();
+  size_t num_elements = std::accumulate(shape_copy.begin(), shape_copy.end(), static_cast<size_t>(1), std::multiplies<>());
+
+  const Qnn_Tensor_t& qnn_tensor = orig_tensor.GetQnnTensor();
+
+  const uint8_t* src_data = nullptr;
+  if (qnn_tensor.version == QNN_TENSOR_VERSION_2) {
+    src_data = reinterpret_cast<const uint8_t*>(qnn_tensor.v2.clientBuf.data);
+  } else if (qnn_tensor.version == QNN_TENSOR_VERSION_1) {
+    src_data = reinterpret_cast<const uint8_t*>(qnn_tensor.v1.clientBuf.data);
+  } else {
+    return ORT_MAKE_STATUS(ONNXRUNTIME, INVALID_ARGUMENT, "Unsupported QNN tensor version: ", qnn_tensor.version);
+  }
+
+  // Allocate and cast to int32_t buffer
+  std::vector<uint8_t> casted_buf(num_elements * sizeof(int32_t));
+  int32_t* dst_data = reinterpret_cast<int32_t*>(casted_buf.data());
+
+  for (size_t i = 0; i < num_elements; ++i) {
+    dst_data[i] = static_cast<int32_t>(src_data[i]);
+  }
+
+  Qnn_QuantizeParams_t dummy_qparams = QNN_QUANTIZE_PARAMS_INIT;
+  dummy_qparams.encodingDefinition = QNN_DEFINITION_UNDEFINED;
+  dummy_qparams.quantizationEncoding = QNN_QUANTIZATION_ENCODING_UNDEFINED;
+
+  QnnQuantParamsWrapper quant_params;
+  ORT_RETURN_IF_ERROR(quant_params.Init(dummy_qparams));
+
+  // Create tensor wrapper with casted buffer
+  QnnTensorWrapper casted_tensor(new_name,
+                                 QNN_TENSOR_TYPE_STATIC,
+                                 QNN_DATATYPE_INT_32,
+                                 std::move(quant_params),
+                                 std::move(shape_copy),
+                                 std::move(casted_buf));
+
+  if (AddTensorWrapper(std::move(casted_tensor))) {
+    LOGS(logger_, INFO) << "Casted tensor " << orig_name << " to int32 as " << new_name;
+    return Status::OK();
+  }
+
+  else {
+    LOGS(logger_, ERROR) << "Failed to add casted tensor: " << new_name;
+    return ORT_MAKE_STATUS(ONNXRUNTIME, FAIL, "Failed to add casted tensor: ", new_name);
+  }
+}
 }  // namespace qnn
 }  // namespace onnxruntime

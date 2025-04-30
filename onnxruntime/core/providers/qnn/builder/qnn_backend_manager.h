@@ -305,6 +305,7 @@ QnnOpPackage interface. Indicates that an Op with the same package name and op n
     }
     ORT_RETURN_IF(QNN_SUCCESS != result, "Failed to load op package. Error: ", QnnErrorHandleToString(result));
     LOGS(*logger_, VERBOSE) << "Successfully load the op package.";
+
     return Status::OK();
   }
 
