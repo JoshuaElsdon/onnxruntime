@@ -6,6 +6,7 @@
 #include <memory>
 #include <ostream>
 #include <cstring>
+#include <iostream>
 
 namespace onnxruntime {
 namespace qnn {
@@ -577,12 +578,13 @@ bool QnnOpConfigWrapper::QnnGraphOpValidation(const QNN_INTERFACE_VER_TYPE& qnn_
 bool QnnOpConfigWrapper::CreateQnnGraphOp(const QNN_INTERFACE_VER_TYPE& qnn_interface,
                                           const Qnn_GraphHandle_t& graph,
                                           std::string& error_msg) {
-  auto status = qnn_interface.graphAddNode(graph, op_config_);
+  Qnn_ErrorHandle_t status = qnn_interface.graphAddNode(graph, op_config_);
   if (QNN_GRAPH_NO_ERROR != status) {
     std::ostringstream oss;
     oss << "QNN.graphAddNode() failed for node `" << name_ << "` of type `" << type_name_
         << "` with error code " << status << std::endl;
     error_msg = oss.str();
+
     return false;
   }
 
