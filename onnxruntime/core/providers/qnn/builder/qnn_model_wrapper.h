@@ -248,7 +248,7 @@ class QnnModelWrapper {
                                std::vector<uint8_t>& unpacked_tensor) const;
 
   Status CastStaticTensorToInt32(const std::string& orig_name,
-                                const std::string& new_name);
+                                const std::string& new_name, const logging::Logger& logger);
 
   QnnBackendType GetQnnBackendType() const { return qnn_backend_type_; }
 

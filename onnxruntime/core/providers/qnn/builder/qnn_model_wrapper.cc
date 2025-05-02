@@ -648,16 +648,23 @@ Status QnnModelWrapper::UnpackInitializerData(const ONNX_NAMESPACE::TensorProto&
 }
 
 Status QnnModelWrapper::CastStaticTensorToInt32(const std::string& orig_name,
-                                                const std::string& new_name) {
+                                                const std::string& new_name, const logging::Logger& logger) {
+  LOGS(logger, INFO) << "Packing tensor " << orig_name << " to int32 as " << new_name;
   const QnnTensorWrapper& orig_tensor = GetQnnTensorWrapper(orig_name);
 
+  LOGS(logger_, INFO) << "Checking tensor datatype: " << orig_tensor.GetTensorDataType();
   ORT_RETURN_IF_NOT(orig_tensor.GetTensorDataType() == QNN_DATATYPE_UINT_8,
                     "Expected QNN_DATATYPE_UINT_8, got something else.");
+                    LOGS(logger_, INFO) << "Checking tensor type: " << orig_tensor.GetTensorType();
   ORT_RETURN_IF_NOT(orig_tensor.GetTensorType() == QNN_TENSOR_TYPE_STATIC,
                     "Expected QNN_TENSOR_TYPE_STATIC for input tensor: ", orig_name);
 
-  std::vector<uint32_t> shape_copy = orig_tensor.GetTensorDims();
-  size_t num_elements = std::accumulate(shape_copy.begin(), shape_copy.end(), static_cast<size_t>(1), std::multiplies<>());
+  std::vector<uint32_t> orig_shape = orig_tensor.GetTensorDims();
+  // print rank
+  LOGS(logger_, INFO) << "Rank: " << orig_shape.size();
+  size_t orig_num_elements = std::accumulate(orig_shape.begin(), orig_shape.end(), static_cast<size_t>(1), std::multiplies<>());
+  LOGS(logger_, INFO) << "Original shape: " << orig_shape[0] << "x" << orig_shape[1] << "x" << orig_shape[2] << "x" << orig_shape[3];
+  ORT_RETURN_IF_NOT((orig_num_elements % 4 == 0), "Original tensor element count must be divisible by 4.");
 
   const Qnn_Tensor_t& qnn_tensor = orig_tensor.GetQnnTensor();
 
@@ -670,13 +677,22 @@ Status QnnModelWrapper::CastStaticTensorToInt32(const std::string& orig_name,
     return ORT_MAKE_STATUS(ONNXRUNTIME, INVALID_ARGUMENT, "Unsupported QNN tensor version: ", qnn_tensor.version);
   }
 
-  // Allocate and cast to int32_t buffer
-  std::vector<uint8_t> casted_buf(num_elements * sizeof(int32_t));
-  int32_t* dst_data = reinterpret_cast<int32_t*>(casted_buf.data());
+  size_t packed_num_elements = orig_num_elements / 4;
+  std::vector<uint8_t> packed_buf(packed_num_elements * sizeof(int32_t));  // this is what QNN wants
 
-  for (size_t i = 0; i < num_elements; ++i) {
-    dst_data[i] = static_cast<int32_t>(src_data[i]);
+  for (size_t i = 0; i < packed_num_elements; ++i) {
+    int32_t packed_value = static_cast<int32_t>(src_data[4 * i]) |
+                           (static_cast<int32_t>(src_data[4 * i + 1]) << 8) |
+                           (static_cast<int32_t>(src_data[4 * i + 2]) << 16) |
+                           (static_cast<int32_t>(src_data[4 * i + 3]) << 24);
+
+    std::memcpy(packed_buf.data() + i * sizeof(int32_t), &packed_value, sizeof(int32_t));
   }
+
+  // Adjust shape — assuming the last dim is the one to compress
+  std::vector<uint32_t> packed_shape = orig_shape;
+  packed_shape[2] = packed_shape[2] / 4;
+  LOGS(logger, INFO) << "Packed tensor shape: " << packed_shape[0] << "x" << packed_shape[1] << "x" << packed_shape[2] << "x" << packed_shape[3];
 
   Qnn_QuantizeParams_t dummy_qparams = QNN_QUANTIZE_PARAMS_INIT;
   dummy_qparams.encodingDefinition = QNN_DEFINITION_UNDEFINED;
@@ -685,22 +701,19 @@ Status QnnModelWrapper::CastStaticTensorToInt32(const std::string& orig_name,
   QnnQuantParamsWrapper quant_params;
   ORT_RETURN_IF_ERROR(quant_params.Init(dummy_qparams));
 
-  // Create tensor wrapper with casted buffer
   QnnTensorWrapper casted_tensor(new_name,
                                  QNN_TENSOR_TYPE_STATIC,
                                  QNN_DATATYPE_INT_32,
                                  std::move(quant_params),
-                                 std::move(shape_copy),
-                                 std::move(casted_buf));
+                                 std::move(packed_shape),
+                                 std::move(packed_buf));
 
   if (AddTensorWrapper(std::move(casted_tensor))) {
-    LOGS(logger_, INFO) << "Casted tensor " << orig_name << " to int32 as " << new_name;
+    LOGS(logger, INFO) << "Packed tensor " << orig_name << " to int32 as " << new_name;
     return Status::OK();
-  }
-
-  else {
-    LOGS(logger_, ERROR) << "Failed to add casted tensor: " << new_name;
-    return ORT_MAKE_STATUS(ONNXRUNTIME, FAIL, "Failed to add casted tensor: ", new_name);
+  } else {
+    LOGS(logger, ERROR) << "Failed to add packed tensor: " << new_name;
+    return ORT_MAKE_STATUS(ONNXRUNTIME, FAIL, "Failed to add packed tensor: ", new_name);
   }
 }
 }  // namespace qnn

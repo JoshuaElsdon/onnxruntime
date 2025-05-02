@@ -8,6 +8,7 @@
 #include <iterator>
 #include <string>
 #include <utility>
+#include <iostream>
 
 #include "core/graph/op_identifier_utils.h"
 #include "core/graph/runtime_optimization_record_container.h"
@@ -29,6 +30,8 @@ void SelectorActionRegistry::RegisterSelectorAndAction(const std::string& name,
                                    std::move(selector_in),
                                    std::move(action_in)});
   ORT_ENFORCE(inserted_in_name_to_entry, "Existing registration with name ", name);
+
+  std::cerr << "Registering selector and action for " << name << std::endl;
 
   const Entry& entry = name_to_entry_it->second;
   for (const auto& [op_type, versions] : entry.ops_and_versions) {
@@ -124,6 +127,7 @@ static Status MatchAndProcess(
     }
 
     LOGS(logger, VERBOSE) << "Matched " << node.OpType();
+    std::cerr << "Matched " << node.OpType() << std::endl;
 
     const auto& selector_action_entry = *selector_action_entry_ptr;
     const auto& action = *selector_action_entry.action;
@@ -190,11 +194,26 @@ Status SelectorActionTransformer::ApplySelectorsAndActions(
 
   for (auto index : graph_viewer.GetNodesInTopologicalOrder()) {
     auto* node = graph.GetNode(index);
+    if (!node) continue;
+
+    std::cerr << "[DEBUG] Node: " << node->Name()
+              << " OpType: " << node->OpType()
+              << " Domain: " << node->Domain()
+              << " EP: " << node->GetExecutionProviderType()
+              << "\n";
+  }
+
+  for (auto index : graph_viewer.GetNodesInTopologicalOrder()) {
+    auto* node = graph.GetNode(index);
     if (node == nullptr) {
       continue;  // was removed by this transformer
     }
 
     ORT_RETURN_IF_ERROR(Recurse(*node, modified, graph_level, logger));
+
+    if (node->OpType() == "MatMulNBits" && node->Domain() == "com.microsoft") {
+      std::cerr << "[QDQ DEBUG] MatMulNBits node found: " << node->Name() << "\n";
+    }
 
     if (graph_utils::IsSupportedProvider(*node, GetCompatibleExecutionProviders())) {
       ORT_RETURN_IF_ERROR(MatchAndProcess(graph, graph_viewer, *node, modified, logger,

@@ -205,7 +205,7 @@ class BaseOpBuilder : public IOpBuilder {
         {"LayerNormalization", QNN_OP_LAYER_NORM},
 
         {"LRN", QNN_OP_LRN},
-        {"MatMulNBits", "MatMulNBits"},
+        {"MatMulNBits", "Matmul2Bit"},
 
         {"Pad", QNN_OP_PAD},
 
@@ -217,7 +217,7 @@ class BaseOpBuilder : public IOpBuilder {
 
   static const std::string& GetQnnOpPackageName(const std::string& onnx_op_type) {
     static const std::unordered_map<std::string, std::string> qnn_op_type_to_op_package_name = {
-        {"MatMulNBits", "MatMulNBits"}};
+        {"MatMulNBits", "Matmul2BitOpPackage"}};
 
     static const std::string default_qnn_package_name(QNN_OP_PACKAGE_NAME_QTI_AISW);
     auto it = qnn_op_type_to_op_package_name.find(onnx_op_type);

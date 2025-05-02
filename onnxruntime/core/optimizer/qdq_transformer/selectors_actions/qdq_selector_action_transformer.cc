@@ -5,6 +5,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <iostream>
 
 #include "core/optimizer/qdq_transformer/selectors_actions/qdq_selector_action_transformer.h"
 #include "core/mlas/inc/mlas.h"
@@ -350,6 +351,38 @@ void WhereQDQRules(SelectorActionRegistry& qdq_selector_action_registry) {
 #endif
 }
 
+void MatMulNBitsRules(SelectorActionRegistry& qdq_selector_action_registry) {
+  {
+    std::cerr << "Registering MatMulNBits QDQ rule..." << std::endl;
+    const std::string action_name{"MatMulNBits_QDQ"};
+
+    NTO::NodeLocation dq0{NTO::NodeType::kInput, 0};  // DQ for A
+    NTO::NodeLocation dq1{NTO::NodeType::kInput, 1};  // DQ for scales
+    NTO::NodeLocation q{NTO::NodeType::kOutput, 0};   // Q for output
+
+    std::vector<NodeAndMoveInfo> moves = {
+        MoveToSlot(dq0, ArgType::kInput, 0, ArgType::kInput, 0),  // A input
+        MoveToSlot(dq1, ArgType::kInput, 0, ArgType::kInput, 2),  // scales input
+        MoveToSlot(q, ArgType::kOutput, 0, ArgType::kOutput, 0)   // output
+    };
+    std::unique_ptr<Action> noop_action = std::make_unique<MergeIntoTargetFixed>(std::move(moves));
+
+    SelectorActionRegistry::OpVersionsMap op_map;
+    op_map[SelectorActionRegistry::OpVersionsMapKey("MatMulNBits", "com.microsoft")] = {1};
+
+#if !defined(ORT_MINIMAL_BUILD)
+    // std::vector<const char*> providers = {kQnnExecutionProvider};  // or your EPs
+    std::unique_ptr<NodeSelector> selector = std::make_unique<QDQ::MatMulNBitsSelector>();
+    qdq_selector_action_registry.RegisterSelectorAndAction(action_name,
+                                                           op_map,
+                                                           std::move(selector),
+                                                           std::move(noop_action));
+#else
+    qdq_selector_action_registry.RegisterAction(action_name, std::move(noop_action));
+#endif
+  }
+}
+
 SelectorActionRegistry CreateSelectorActionRegistry(
     bool is_int8_allowed,
     int64_t qdq_matmulnbits_accuracy_level,
@@ -370,6 +403,7 @@ SelectorActionRegistry CreateSelectorActionRegistry(
                              qdq_matmulnbits_accuracy_level,
                              intra_op_thread_pool,
                              p_buffered_tensors);
+  MatMulNBitsRules(qdq_selector_action_registry);
 
   return qdq_selector_action_registry;
 }
@@ -389,7 +423,7 @@ QDQSelectorActionTransformer::QDQSelectorActionTransformer(
           apply_context,
           // this transformer is compatible with CPU, DML, ACL and CUDA EP.
           // There is further EP control on the rule level.
-          {kCpuExecutionProvider, kDmlExecutionProvider, kAclExecutionProvider, kCudaExecutionProvider}} {
+          {kCpuExecutionProvider, kDmlExecutionProvider, kAclExecutionProvider, kCudaExecutionProvider, kQnnExecutionProvider }} {
 }
 
 }  // namespace onnxruntime

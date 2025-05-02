@@ -10,6 +10,7 @@
 #include "core/optimizer/qdq_transformer/qdq_util.h"
 #include "core/optimizer/qdq_transformer/selectors_actions/shared/utils.h"
 #include "core/optimizer/utils.h"
+#include <iostream>
 
 namespace onnxruntime {
 namespace QDQ {
@@ -524,6 +525,58 @@ bool DQMatMulNodeGroupSelector::Check(const GraphViewer& graph_viewer, const Nod
       (zp_tensor_proto && (zp_tensor_proto->dims()[0] != scale_tensor_proto->dims()[0] ||
                            zp_tensor_proto->dims()[1] != scale_tensor_proto->dims()[1]))) {
     return false;
+  }
+
+  return true;
+}
+
+bool MatMulNBitsNodeGroupSelector::Check(const GraphViewer& graph_viewer,
+                                         const Node& node,
+                                         const Node* redundant_clip_node,
+                                         const std::vector<const Node*>& dq_nodes,
+                                         const std::vector<const Node*>& q_nodes) const{
+
+  if (!CheckQDQNodes(graph_viewer, node, redundant_clip_node, dq_nodes, q_nodes)) {
+    std::cerr << "CheckQDQNodes failed" << std::endl;
+    return false;
+  }
+
+  std::cerr << "MatMulNBitsNodeGroupSelector::Check()" << std::endl;
+
+  LOGS_DEFAULT(INFO) << "MatMulNBitsNodeGroupSelector::Check()";
+
+  if (node.OpType() != "MatMulNBits") {
+    std::cerr << "wrong type" << std::endl;
+    return false;
+  }
+
+  // Accept 2–4 DequantizeLinear inputs: A,  scales
+  if (dq_nodes.size() != 2) {
+    std::cerr << "wrong number of dq nodes" << std::endl;
+    return false;
+  }
+
+  if (q_nodes.size() != 1) {
+    return false;
+  }
+
+  // Validate that all inputs are DQ nodes
+  for (const Node* dq_node : dq_nodes) {
+    if (!dq_node || dq_node->OpType() != "DequantizeLinear") {
+      return false;
+    }
+
+    const int32_t elem_type = dq_node->InputDefs()[0]->TypeAsProto()->tensor_type().elem_type();
+
+    if (!allow_16bit_ && (elem_type == ONNX_NAMESPACE::TensorProto_DataType_UINT16 ||
+                          elem_type == ONNX_NAMESPACE::TensorProto_DataType_INT16)) {
+      return false;
+    }
+
+    if (!allow_4bit_ && (elem_type == ONNX_NAMESPACE::TensorProto_DataType_UINT4 ||
+                         elem_type == ONNX_NAMESPACE::TensorProto_DataType_INT4)) {
+      return false;
+    }
   }
 
   return true;
