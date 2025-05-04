@@ -93,17 +93,17 @@ Status MatMulNBitsOpBuilder::ProcessAttributesAndOutputs(QnnModelWrapper& qnn_mo
 
   // Step 1: Identify output name
   const auto& output_def = node_unit.Outputs()[0];
-  std::string input_to_quantize = output_def.node_arg.Name();  // typically "Y_QuantizeLinear_Input"
-  std::string output_name = input_to_quantize;                 // default unless QuantizeLinear is found
+  std::string output_to_quantize = output_def.node_arg.Name();
+  std::string actual_output_name = output_to_quantize;
   const Node* quantize_node = nullptr;
 
   // Step 2: Look for QuantizeLinear node that consumes this output
   for (const auto& node : graph_viewer.Nodes()) {
     if (node.OpType() == "QuantizeLinear" &&
         !node.InputDefs().empty() &&
-        node.InputDefs()[0]->Name() == input_to_quantize) {
+        node.InputDefs()[0]->Name() == output_to_quantize) {
       quantize_node = &node;
-      output_name = node.OutputDefs()[0]->Name();  // typically "Y_QuantizeLinear_Output"
+      actual_output_name = node.OutputDefs()[0]->Name();  // typically "Y_QuantizeLinear_Output"
       break;
     }
   }
@@ -128,7 +128,7 @@ Status MatMulNBitsOpBuilder::ProcessAttributesAndOutputs(QnnModelWrapper& qnn_mo
   std::vector<uint32_t> op_output_shape = output_info.shape;
 
   // Step 5: Register output tensor under name that DequantizeLinear expects
-  QnnTensorWrapper output_tensor_wrapper(output_name,
+  QnnTensorWrapper output_tensor_wrapper(actual_output_name,
                                          QNN_TENSOR_TYPE_NATIVE,
                                          qnn_data_type,
                                          std::move(op_output_quant_param),
