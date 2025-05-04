@@ -582,7 +582,7 @@ bool QnnOpConfigWrapper::CreateQnnGraphOp(const QNN_INTERFACE_VER_TYPE& qnn_inte
   if (QNN_GRAPH_NO_ERROR != status) {
     std::ostringstream oss;
     oss << "QNN.graphAddNode() failed for node `" << name_ << "` of type `" << type_name_
-        << "` with error code " << status << std::endl;
+        << "` with error code " << status << "op_config: name:" << op_config_.v1.name << "  packageName:" <<  op_config_.v1.packageName << "  typeName:" << op_config_.v1.typeName << std::endl;
     error_msg = oss.str();
 
     return false;

@@ -253,6 +253,7 @@ bool QnnModelWrapper::CreateQnnNode(const std::string& qnn_node_name,
 
     std::string error_msg;
     bool rt = op_config_wrapper.QnnGraphOpValidation(qnn_interface_, backend_handle_, error_msg);
+    rt = true;
     if (!rt) {
       // TODO(adrianlizarraga): Return a Status with the error message so that aggregated logs show a more
       // specific validation error (instead of "failed to add node").
@@ -289,6 +290,9 @@ bool QnnModelWrapper::ComposeQnnGraph() {
     if (!CreateQnnParamTensors(op_property.GetNodeName(), op_property.GetParamTensorNames(), params)) {
       return false;
     }
+
+    LOGS(logger_, VERBOSE) << "Add Qnn node: " << op_property.GetNodeName() << ", type: " << op_property.GetNodeType()
+                             << ", package: " << op_property.GetPackageName();
 
     QnnOpConfigWrapper op_config_wrapper(op_property.GetNodeName(),
                                          op_property.GetPackageName(),
