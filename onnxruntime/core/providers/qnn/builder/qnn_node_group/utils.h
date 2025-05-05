@@ -36,7 +36,7 @@ const NodeUnit* GetOnlyChildOfType(const GraphViewer& graph_viewer,
                                    const std::unordered_map<const NodeUnit*, const IQnnNodeGroup*>& node_unit_to_qnn_node_group);
 
 const NodeUnit* GetInputTypeOnIndex(const GraphViewer& graph_viewer, const NodeUnit& main_node_unit, const int input_index, gsl::span<const std::string_view> input_types,
-                                    const std::unordered_map<const Node*, const NodeUnit*>& node_unit_map, const std::unordered_map<const NodeUnit*, const IQnnNodeGroup*>& node_unit_to_qnn_node_group);
+                                    const std::unordered_map<const Node*, const NodeUnit*>& node_unit_map, const std::unordered_map<const NodeUnit*, const IQnnNodeGroup*>& node_unit_to_qnn_node_group, const logging::Logger& logger);
 
 }  // namespace qnn
 }  // namespace onnxruntime

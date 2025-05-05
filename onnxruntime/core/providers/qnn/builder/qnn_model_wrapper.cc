@@ -129,6 +129,7 @@ bool QnnModelWrapper::AddParamWrapper(QnnParamWrapper&& param_wrapper) {
   }
 
   // save created tensors for later lookup to populate graph node construction
+  LOGS(logger_, VERBOSE) << "Add parameter tensor: " << param_tensor_name;
   model_params_map_.emplace(param_tensor_name, std::move(param_wrapper));
 
   return true;
@@ -212,6 +213,9 @@ Status QnnModelWrapper::ValidateQnnNode(const std::string& node_name,
                                        std::move(output_tensors),
                                        std::move(params));
 
+  using namespace onnxruntime::qnn::utils;
+  LOGS(logger_, VERBOSE) << "VALIDATE:" << op_config_wrapper;
+
   std::string error_msg;
   ORT_RETURN_IF_NOT(op_config_wrapper.QnnGraphOpValidation(qnn_interface_, backend_handle_, error_msg), error_msg);
 
@@ -292,7 +296,7 @@ bool QnnModelWrapper::ComposeQnnGraph() {
     }
 
     LOGS(logger_, VERBOSE) << "Add Qnn node: " << op_property.GetNodeName() << ", type: " << op_property.GetNodeType()
-                             << ", package: " << op_property.GetPackageName();
+                           << ", package: " << op_property.GetPackageName();
 
     QnnOpConfigWrapper op_config_wrapper(op_property.GetNodeName(),
                                          op_property.GetPackageName(),

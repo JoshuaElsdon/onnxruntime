@@ -85,23 +85,27 @@ static std::unique_ptr<IQnnNodeGroup> TryQnnFusions(
     const std::unordered_map<const Node*, const NodeUnit*>& node_to_node_unit,
     const std::unordered_map<const NodeUnit*, const IQnnNodeGroup*>& node_unit_to_qnn_node_group,
     const logging::Logger& logger) {
+      LOGS(logger, INFO) << "TryQnnFusions() called.";
   // Maps a starting operator type to the fusion function.
-  static std::unordered_map<std::string, FusionFunc> fusions = {
-      {"DequantizeLinear", DQQFusion::TryFusion},
-      {"HardSigmoid", HardSigmoidMulFusion::TryFusion},
-      {"DequantizeLinear", MatMulNBitsQDQFusion::TryFusion},
-  };
+  static const std::vector<FusionFunc> fusion_funcs = {
+    DQQFusion::TryFusion,
+    MatMulNBitsQDQFusion::TryFusion,
+    HardSigmoidMulFusion::TryFusion,
+    // add more as needed
+};
 
   // For now, all fusions involve standalone node units (i.e., no wrapping DQ/Q nodes).
   if (starting_node_unit.UnitType() != NodeUnit::Type::SingleNode) {
     return nullptr;
   }
 
-  auto iter = fusions.find(starting_node_unit.OpType());
-  if (iter != fusions.end()) {
-    FusionFunc fusion_func = iter->second;
-    return fusion_func(qnn_model_wrapper, starting_node_unit, node_to_node_unit,
-                       node_unit_to_qnn_node_group, logger);
+  for (auto& fusion_func : fusion_funcs) {
+    auto result = fusion_func(qnn_model_wrapper, starting_node_unit,
+                              node_to_node_unit, node_unit_to_qnn_node_group, logger);
+    if (result) {
+      LOGS(logger, INFO) << "Fusion succeeded for operator: " << starting_node_unit.OpType();
+      return result;
+    }
   }
   return nullptr;
 }
