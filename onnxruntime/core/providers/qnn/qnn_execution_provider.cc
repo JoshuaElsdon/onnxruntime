@@ -895,6 +895,8 @@ Status QNNExecutionProvider::CompileFromOrtGraph(const std::vector<FusedNodeAndG
       json_graph_filepath = path.string();
     }
 
+    json_graph_filepath = "C:\\onnxruntime_qnn.json";
+
     ORT_RETURN_IF_ERROR(qnn_model->ComposeGraph(graph_viewer, fused_node, model_settings_, logger,
                                                 graph_configs_builder.GetQnnConfigs(), json_graph_filepath));
     ORT_RETURN_IF_ERROR(qnn_model->FinalizeGraphs(logger));
