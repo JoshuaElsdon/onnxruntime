@@ -128,6 +128,7 @@ class MlasSQTernaryBitGemmTest : public MlasTestBase {
         std::memcmp(x0->bsums, x1->bsums, sizeof(x0->bsums)) == 0 &&
         x0->d == x1->d;
     assert(pass_round_trip_test);
+    ORT_UNUSED_PARAMETER(pass_round_trip_test);
 
     std::vector<float> DequantBData(N * K);
     std::vector<uint8_t> QuantBData2(QuantBDataSizeInBytes);

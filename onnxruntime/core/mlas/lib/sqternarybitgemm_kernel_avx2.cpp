@@ -55,7 +55,7 @@ quantize_row_q8_K_ref(const float* x, block_q8_K* y, int64_t k)
     for (int i = 0; i < nb; i++) {
         float max = 0;
         float amax = 0;
-        for (int j = 0; j < QK_K; ++j) {
+        for (size_t j = 0; j < QK_K; ++j) {
             float ax = fabsf(x[j]);
             if (ax > amax) {
                 amax = ax;
@@ -71,11 +71,11 @@ quantize_row_q8_K_ref(const float* x, block_q8_K* y, int64_t k)
         // const float iscale = -128.f/max;
         //  We need this change for IQ2_XXS, else the AVX implementation becomes very awkward
         const float iscale = -127.f / max;
-        for (int j = 0; j < QK_K; ++j) {
+        for (size_t j = 0; j < QK_K; ++j) {
             int v = nearest_int(iscale * x[j]);
             y[i].qs[j] = MIN(127, v);
         }
-        for (int j = 0; j < QK_K / 16; ++j) {
+        for (size_t j = 0; j < QK_K / 16; ++j) {
             int sum = 0;
             for (int ii = 0; ii < 16; ++ii) {
                 sum += y[i].qs[j * 16 + ii];
@@ -93,8 +93,8 @@ dequantize_row_q8_K(const block_q8_K* x, float* y, int64_t k)
     assert(k % QK_K == 0);
     const int64_t nb = k / QK_K;
 
-    for (int i = 0; i < nb; i++) {
-        for (int j = 0; j < QK_K; ++j) {
+    for (int64_t i = 0; i < nb; i++) {
+        for (size_t j = 0; j < QK_K; ++j) {
             *y++ = x[i].d * x[i].qs[j];
         }
     }
@@ -330,6 +330,8 @@ QTernaryBitGemmPackQuantBDataSize(
 {
     assert(ComputeType == SQNBIT_CompInt8);
     assert(BlkLen == QK_K);
+    ORT_UNUSED_PARAMETER(ComputeType);
+    ORT_UNUSED_PARAMETER(BlkLen);
     size_t BlkCountK = (K + QK_K - 1) / QK_K;
     return BlkCountK * N * sizeof(block_tq1_0);
 }
@@ -345,6 +347,8 @@ QTernaryBitGemmPerGemmWorkspaceSize(
 {
     assert(ComputeType == SQNBIT_CompInt8);
     assert(BlkLen == QK_K);
+    ORT_UNUSED_PARAMETER(ComputeType);
+    ORT_UNUSED_PARAMETER(BlkLen);
 
     // workspace buffer is used for block quantization of A to int8
     const size_t BlockCountK = (K + QK_K - 1) / QK_K;

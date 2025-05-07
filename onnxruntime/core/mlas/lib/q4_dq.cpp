@@ -1786,7 +1786,7 @@ quantize_row_tq1_0_ref(const float* x, block_tq1_0* y, int64_t k)
     for (int64_t i = 0; i < nb; i++) {
         float amax = 0.0f;  // absolute max
 
-        for (int j = 0; j < QK_K; j++) {
+        for (size_t j = 0; j < QK_K; j++) {
             const float v = x[j];
             amax = MAX(amax, fabsf(v));
         }
