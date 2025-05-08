@@ -863,6 +863,11 @@ Status QnnBackendManager::SetupBackend(const logging::Logger& logger,
     LOGS(logger, VERBOSE) << "InitializeProfiling succeed.";
   }
 
+  if (status.IsOK()) {
+    ORT_RETURN_IF_ERROR(LoadOpPackage());
+    LOGS(logger, VERBOSE) << "LoadOpPackage succeed.";
+  }
+
   if (!load_from_cached_context) {
     if (status.IsOK()) {
       status = CreateContext();
@@ -872,10 +877,7 @@ Status QnnBackendManager::SetupBackend(const logging::Logger& logger,
     }
   }
 
-  if (status.IsOK()) {
-    ORT_RETURN_IF_ERROR(LoadOpPackage());
-    LOGS(logger, VERBOSE) << "LoadOpPackage succeed.";
-  }
+
 
   if (status.IsOK()) {
     LOGS(logger, VERBOSE) << "QNN SetupBackend succeed";

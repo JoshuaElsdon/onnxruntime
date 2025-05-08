@@ -382,8 +382,16 @@ QNNExecutionProvider::QNNExecutionProvider(const ProviderOptions& provider_optio
     }
   }
 
+  static const std::string QNN_CUSTOM_OP_PACKAGE = "op_pack_path";
+  auto op_pack_path_pos = provider_options_map.find(QNN_CUSTOM_OP_PACKAGE);
+  if (op_pack_path_pos != provider_options_map.end()) {
+    op_pack_path_ = op_pack_path_pos->second;
+    LOGS_DEFAULT(VERBOSE) << "Custom op package path: " << op_pack_path_;
+  }
+
   qnn_backend_manager_ = qnn::QnnBackendManager::Create(
       qnn::QnnBackendManagerConfig{backend_path,
+                                  op_pack_path_,
                                    profiling_level_etw,
                                    profiling_level,
                                    profiling_file_path,

@@ -17,6 +17,7 @@
 #include <string_view>
 #include <unordered_map>
 #include <vector>
+#include <filesystem>        // for std::filesystem::exists
 
 #include "HTP/QnnHtpDevice.h"
 #include "QnnLog.h"
@@ -35,6 +36,7 @@ class QnnModel;
 // configuration values for QnnBackendManager creation
 struct QnnBackendManagerConfig {
   std::string backend_path;
+  std::string op_pack_path;
   ProfilingLevel profiling_level_etw;
   ProfilingLevel profiling_level;
   std::string profiling_file_path;
@@ -60,6 +62,7 @@ class QnnBackendManager : public std::enable_shared_from_this<QnnBackendManager>
   // std::make_shared().
   QnnBackendManager(const QnnBackendManagerConfig& config, PrivateConstructorTag)
       : backend_path_(config.backend_path),
+        op_pack_path_(config.op_pack_path),
         profiling_level_etw_(config.profiling_level_etw),
         profiling_level_(config.profiling_level),
         profiling_file_path_(config.profiling_file_path),
@@ -256,14 +259,41 @@ class QnnBackendManager : public std::enable_shared_from_this<QnnBackendManager>
   };
 
   Status LoadOpPackage() {
-    // bool is_npu_backend = IsNpuBackend(GetQnnBackendType());
-    // std::string target = is_npu_backend ? "HTP" : "CPU";
+    // if op_pack_path_ is empty, return
+    if (op_pack_path_.empty()) {
+      LOGS(*logger_, VERBOSE) << "No op package path provided. Skipping op package loading.";
+      return Status::OK();
+    }
+    LOGS(*logger_, VERBOSE) << "Loading op package from path: " << op_pack_path_;
+    // the path to the op package is stored in op_pack_path_, though it is postpended with interface_provider_name,  path/op_package.so:interface_provider_name
+    // split based on ":"
+    std::string path = "";
+    std::string interface_provider_name = "";
+    // find the first occurrence of ":"
+    size_t pos = op_pack_path_.find(':');
+    if (pos != std::string::npos) {
+      path = op_pack_path_.substr(0, pos);
+      interface_provider_name = op_pack_path_.substr(pos + 1);
 
-    std::string lib_path = "C:\\\\libQnnMatMulNBits.so";
-    LOGS(*logger_, INFO) << "Attempting to open op package: " << lib_path;
+      LOGS(*logger_, INFO) << "Path: " << path;
+      LOGS(*logger_, INFO) << "Interface: " << interface_provider_name;
+    } else {
+      LOGS(*logger_, ERROR) << "Delimiter ':' not found in op_pack_path string. It is used to postpend the interface provider name.";
+    }
+
+    if (nullptr == qnn_interface_.backendRegisterOpPackage) {
+      LOGS(*logger_, ERROR) << "backendRegisterOpPackageFnHandle is nullptr.";
+    }
+
+    // varify the file at the path exists
+    if (!std::filesystem::is_regular_file(path)) {
+      LOGS(*logger_, ERROR) << "Op package path does not exist: " << path;
+      return Status(common::ONNXRUNTIME, common::FAIL, "Op package path does not exist: " + path);
+    }
+
     Qnn_ErrorHandle_t result = qnn_interface_.backendRegisterOpPackage(backend_handle_,
-                                                                        lib_path.c_str(),      // need to make it configurable
-                                                                       "MatMulNBitsInterfaceProvider", // need to make it configurable
+                                                                       (char*)path.c_str(),                     // need to make it configurable
+                                                                       (char*)interface_provider_name.c_str(),  // need to make it configurable
                                                                        nullptr);
     if (result != QNN_SUCCESS) {
       switch (result) {
@@ -271,7 +301,7 @@ class QnnBackendManager : public std::enable_shared_from_this<QnnBackendManager>
           LOGS(*logger_, ERROR) << "Invalid argument, please check if op package path or interface provider is NULL.";
           break;
         case QNN_BACKEND_ERROR_OP_PACKAGE_NOT_FOUND:
-          LOGS(*logger_, ERROR) << "Could not open op package path.";
+          LOGS(*logger_, ERROR) << "Could not open op package path. HTP";
           break;
         case QNN_BACKEND_ERROR_OP_PACKAGE_IF_PROVIDER_NOT_FOUND:
           LOGS(*logger_, ERROR) << "Could not find interfaceProvider symbol in op package library.";
@@ -311,6 +341,7 @@ QnnOpPackage interface. Indicates that an Op with the same package name and op n
 
  private:
   const std::string backend_path_;
+  const std::string op_pack_path_;
   std::recursive_mutex logger_recursive_mutex_;
   const logging::Logger* logger_ = nullptr;
   QNN_INTERFACE_VER_TYPE qnn_interface_ = QNN_INTERFACE_VER_TYPE_INIT;
