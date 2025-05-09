@@ -897,13 +897,15 @@ Status QNNExecutionProvider::CompileFromOrtGraph(const std::vector<FusedNodeAndG
 
     std::string json_graph_filepath;
 
+    dump_json_qnn_graph_ = true;
+    json_graph_filepath = "/home/josh/";
+
     if (dump_json_qnn_graph_) {
       namespace fs = std::filesystem;
       fs::path path = fs::path(json_qnn_graph_dir_) / fs::path(fused_node.Name() + ".json");
       json_graph_filepath = path.string();
+      LOGS(logger, VERBOSE) << "Dumping QNN graph to: " << json_graph_filepath;
     }
-
-    json_graph_filepath = "C:\\onnxruntime_qnn.json";
 
     ORT_RETURN_IF_ERROR(qnn_model->ComposeGraph(graph_viewer, fused_node, model_settings_, logger,
                                                 graph_configs_builder.GetQnnConfigs(), json_graph_filepath));

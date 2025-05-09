@@ -428,7 +428,10 @@ Status QnnBackendManager::CreateDevice() {
 
   LOGS_DEFAULT(INFO) << "Create device.";
   if (nullptr != qnn_interface_.deviceCreate) {
-    Qnn_ErrorHandle_t result = qnn_interface_.deviceCreate(log_handle_, device_configs_builder.GetQnnConfigs(), &device_handle_);
+    if (nullptr == device_configs_builder.GetQnnConfigs()) {
+      LOGS_DEFAULT(INFO) << "Device config is null.";
+    }
+    Qnn_ErrorHandle_t result = qnn_interface_.deviceCreate(log_handle_, nullptr, &device_handle_);
     if (QNN_SUCCESS != result) {
       return ORT_MAKE_STATUS(ONNXRUNTIME, FAIL, "Failed to create device. Error: ", QnnErrorHandleToString(result));
     }

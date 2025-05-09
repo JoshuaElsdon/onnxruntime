@@ -149,6 +149,7 @@ Status QnnModel::ComposeGraph(const GraphViewer& graph_viewer,
     if (ofs.is_open()) {
       ofs << json_graph.dump();
       ofs.close();
+      LOGS(logger, VERBOSE) << "Dumped QNN graph to: " << json_qnn_graph_path;
     } else {
       LOGS(logger, WARNING) << "Could not open JSON graph file: " << json_qnn_graph_path;
     }

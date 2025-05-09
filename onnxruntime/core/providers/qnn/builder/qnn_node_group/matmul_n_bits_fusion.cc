@@ -188,7 +188,7 @@ static Status CreateOrValidateOnQnn(QnnModelWrapper& qnn_model_wrapper,
   ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(zeros_input_tensor)), "Failed to add input");
   ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(output_tensor)), "Failed to add output");
   ORT_RETURN_IF_NOT(qnn_model_wrapper.CreateQnnNode(node_name,
-                                                    QNN_OP_PACKAGE_NAME_QTI_AISW,
+                                                    "MatMulNBits",
                                                     "MatMulNBits",
                                                     {a_input_def.node_arg.Name(), b_input_def.node_arg.Name(), scale_input_def.node_arg.Name(), zeros_input_def.node_arg.Name()},
                                                     {output_def.node_arg.Name()},
