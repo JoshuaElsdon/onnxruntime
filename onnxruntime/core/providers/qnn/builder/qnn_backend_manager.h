@@ -17,7 +17,7 @@
 #include <string_view>
 #include <unordered_map>
 #include <vector>
-#include <filesystem>        // for std::filesystem::exists
+#include <filesystem>  // for std::filesystem::exists
 
 #include "HTP/QnnHtpDevice.h"
 #include "QnnLog.h"
@@ -258,6 +258,20 @@ class QnnBackendManager : public std::enable_shared_from_this<QnnBackendManager>
     std::unique_ptr<QnnContextMemHandleManager> mem_handles;
   };
 
+  void split(std::vector<std::string>& splitString,
+             const std::string& tokenizedString,
+             const char separator) {
+    splitString.clear();
+    std::istringstream tokenizedStringStream(tokenizedString);
+    while (!tokenizedStringStream.eof()) {
+      std::string value;
+      getline(tokenizedStringStream, value, separator);
+      if (!value.empty()) {
+        splitString.push_back(value);
+      }
+    }
+  }
+
   Status LoadOpPackage() {
     // if op_pack_path_ is empty, return
     if (op_pack_path_.empty()) {
@@ -267,18 +281,19 @@ class QnnBackendManager : public std::enable_shared_from_this<QnnBackendManager>
     LOGS(*logger_, VERBOSE) << "Loading op package from path: " << op_pack_path_;
     // the path to the op package is stored in op_pack_path_, though it is postpended with interface_provider_name,  path/op_package.so:interface_provider_name
     // split based on ":"
-    std::string path = "";
-    std::string interface_provider_name = "";
-    // find the first occurrence of ":"
-    size_t pos = op_pack_path_.find(':');
-    if (pos != std::string::npos) {
-      path = op_pack_path_.substr(0, pos);
-      interface_provider_name = op_pack_path_.substr(pos + 1);
 
-      LOGS(*logger_, INFO) << "Path: " << path;
-      LOGS(*logger_, INFO) << "Interface: " << interface_provider_name;
-    } else {
-      LOGS(*logger_, ERROR) << "Delimiter ':' not found in op_pack_path string. It is used to postpend the interface provider name.";
+    std::vector<std::string> opPackage;
+    split(opPackage, op_pack_path_, ':');
+    if (opPackage.size() != 2 && opPackage.size() != 3) {
+      return Status(common::ONNXRUNTIME, common::FAIL, "Malformed opPackageString provided");
+    }
+    std::string path = opPackage[0];
+    std::string interface_provider_name = opPackage[1];
+    std::string target_string;
+    const char* target = nullptr;
+    if (opPackage.size() == 3) {
+      target_string = opPackage[2];
+      target = target_string.c_str();
     }
 
     if (nullptr == qnn_interface_.backendRegisterOpPackage) {
@@ -291,10 +306,12 @@ class QnnBackendManager : public std::enable_shared_from_this<QnnBackendManager>
       return Status(common::ONNXRUNTIME, common::FAIL, "Op package path does not exist: " + path);
     }
 
-    Qnn_ErrorHandle_t result = qnn_interface_.backendRegisterOpPackage(backend_handle_,
-                                                                       (char*)path.c_str(),                     // need to make it configurable
-                                                                       (char*)interface_provider_name.c_str(),  // need to make it configurable
-                                                                       nullptr);
+    Qnn_ErrorHandle_t result = qnn_interface_.backendRegisterOpPackage(
+      backend_handle_,
+      path.c_str(),
+      interface_provider_name.c_str(),
+      target);
+
     if (result != QNN_SUCCESS) {
       switch (result) {
         case QNN_BACKEND_ERROR_INVALID_ARGUMENT:
