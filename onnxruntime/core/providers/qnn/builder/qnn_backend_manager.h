@@ -37,6 +37,8 @@ class QnnModel;
 struct QnnBackendManagerConfig {
   std::string backend_path;
   std::string op_pack_path;
+  std::string op_pack_interface;
+  std::string op_pack_target;
   ProfilingLevel profiling_level_etw;
   ProfilingLevel profiling_level;
   std::string profiling_file_path;
@@ -63,6 +65,8 @@ class QnnBackendManager : public std::enable_shared_from_this<QnnBackendManager>
   QnnBackendManager(const QnnBackendManagerConfig& config, PrivateConstructorTag)
       : backend_path_(config.backend_path),
         op_pack_path_(config.op_pack_path),
+        op_pack_interface_(config.op_pack_interface),
+        op_pack_target_(config.op_pack_target),
         profiling_level_etw_(config.profiling_level_etw),
         profiling_level_(config.profiling_level),
         profiling_file_path_(config.profiling_file_path),
@@ -279,38 +283,28 @@ class QnnBackendManager : public std::enable_shared_from_this<QnnBackendManager>
       return Status::OK();
     }
     LOGS(*logger_, VERBOSE) << "Loading op package from path: " << op_pack_path_;
-    // the path to the op package is stored in op_pack_path_, though it is postpended with interface_provider_name,  path/op_package.so:interface_provider_name
-    // split based on ":"
-
-    std::vector<std::string> opPackage;
-    split(opPackage, op_pack_path_, ':');
-    if (opPackage.size() != 2 && opPackage.size() != 3) {
-      return Status(common::ONNXRUNTIME, common::FAIL, "Malformed opPackageString provided");
+    if (op_pack_interface_.empty()) {
+      LOGS(*logger_, ERROR) << "Op package interface is empty.";
+      return Status(common::ONNXRUNTIME, common::FAIL, "Op package interface is empty.");
     }
-    std::string path = opPackage[0];
-    std::string interface_provider_name = opPackage[1];
-    std::string target_string;
-    const char* target = nullptr;
-    if (opPackage.size() == 3) {
-      target_string = opPackage[2];
-      target = target_string.c_str();
-    }
+    LOGS(*logger_, VERBOSE) << "Op package target: " << op_pack_target_;
 
     if (nullptr == qnn_interface_.backendRegisterOpPackage) {
       LOGS(*logger_, ERROR) << "backendRegisterOpPackageFnHandle is nullptr.";
     }
 
     // varify the file at the path exists
-    if (!std::filesystem::is_regular_file(path)) {
-      LOGS(*logger_, ERROR) << "Op package path does not exist: " << path;
-      return Status(common::ONNXRUNTIME, common::FAIL, "Op package path does not exist: " + path);
+    if (!std::filesystem::is_regular_file(op_pack_path_)) {
+      LOGS(*logger_, ERROR) << "Op package path does not exist: " << op_pack_path_;
+      return Status(common::ONNXRUNTIME, common::FAIL, "Op package path does not exist: " + op_pack_path_);
     }
 
     Qnn_ErrorHandle_t result = qnn_interface_.backendRegisterOpPackage(
       backend_handle_,
-      path.c_str(),
-      interface_provider_name.c_str(),
-      target);
+      op_pack_path_.c_str(),
+      op_pack_interface_.c_str(),
+      op_pack_target_.c_str()
+    );
 
     if (result != QNN_SUCCESS) {
       switch (result) {
@@ -359,6 +353,8 @@ QnnOpPackage interface. Indicates that an Op with the same package name and op n
  private:
   const std::string backend_path_;
   const std::string op_pack_path_;
+  const std::string op_pack_interface_;
+  const std::string op_pack_target_;
   std::recursive_mutex logger_recursive_mutex_;
   const logging::Logger* logger_ = nullptr;
   QNN_INTERFACE_VER_TYPE qnn_interface_ = QNN_INTERFACE_VER_TYPE_INIT;
