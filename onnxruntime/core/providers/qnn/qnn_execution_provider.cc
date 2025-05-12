@@ -897,9 +897,6 @@ Status QNNExecutionProvider::CompileFromOrtGraph(const std::vector<FusedNodeAndG
 
     std::string json_graph_filepath;
 
-    dump_json_qnn_graph_ = true;
-    json_graph_filepath = "/home/josh/";
-
     if (dump_json_qnn_graph_) {
       namespace fs = std::filesystem;
       fs::path path = fs::path(json_qnn_graph_dir_) / fs::path(fused_node.Name() + ".json");
