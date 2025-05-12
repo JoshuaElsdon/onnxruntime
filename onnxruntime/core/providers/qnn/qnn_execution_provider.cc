@@ -389,9 +389,24 @@ QNNExecutionProvider::QNNExecutionProvider(const ProviderOptions& provider_optio
     LOGS_DEFAULT(VERBOSE) << "Custom op package path: " << op_pack_path_;
   }
 
+  static const std::string QNN_CUSTOM_OP_PACKAGE_INTERFACE = "op_pack_interface";
+  auto op_pack_interface_pos = provider_options_map.find(QNN_CUSTOM_OP_PACKAGE_INTERFACE);
+  if (op_pack_interface_pos != provider_options_map.end()) {
+    op_pack_interface_ = op_pack_interface_pos->second;
+    LOGS_DEFAULT(VERBOSE) << "Custom op package interface: " << op_pack_interface_;
+  }
+
+  static const std::string QNN_CUSTOM_OP_PACKAGE_TARGET = "op_pack_target";
+  auto op_pack_target_pos = provider_options_map.find(QNN_CUSTOM_OP_PACKAGE_TARGET);
+  if (op_pack_target_pos != provider_options_map.end()) {
+    op_pack_target_ = op_pack_target_pos->second;
+    LOGS_DEFAULT(VERBOSE) << "Custom op package target: " << op_pack_target_;
+  }
   qnn_backend_manager_ = qnn::QnnBackendManager::Create(
       qnn::QnnBackendManagerConfig{backend_path,
                                   op_pack_path_,
+                                  op_pack_interface_,
+                                  op_pack_target_,
                                    profiling_level_etw,
                                    profiling_level,
                                    profiling_file_path,

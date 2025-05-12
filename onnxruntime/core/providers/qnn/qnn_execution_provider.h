@@ -98,6 +98,8 @@ class QNNExecutionProvider : public IExecutionProvider {
   std::string json_qnn_graph_dir_ = "";
 
   std::string op_pack_path_ = "";
+  std::string op_pack_interface_ = "";
+  std::string op_pack_target_ = "";
 
   // Whether this is set depends on a session option enabling it and if the RPCMEM dynamic library is available.
   // This is potentially shared with HtpSharedMemoryAllocator which may be returned by CreatePreferredAllocators().
