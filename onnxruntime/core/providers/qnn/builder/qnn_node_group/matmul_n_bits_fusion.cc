@@ -132,6 +132,20 @@ static Status CreateOrValidateOnQnn(QnnModelWrapper& qnn_model_wrapper,
   const NodeUnitIODef& zeros_input_def = matmul_n_bits_unit.Inputs()[3];
   const NodeUnitIODef& output_def = output_q_unit.Outputs()[0];
 
+  TensorInfo b_info{};
+  ORT_RETURN_IF_ERROR(qnn_model_wrapper.GetTensorInfo(b_input_def, b_info));
+  TensorInfo zeros_info{};
+  ORT_RETURN_IF_ERROR(qnn_model_wrapper.GetTensorInfo(zeros_input_def, zeros_info));
+  Qnn_QuantizeParams_t dummy_qp = QNN_QUANTIZE_PARAMS_INIT;
+  dummy_qp.encodingDefinition    = QNN_DEFINITION_DEFINED;
+  dummy_qp.quantizationEncoding  = QNN_QUANTIZATION_ENCODING_SCALE_OFFSET;
+  dummy_qp.scaleOffsetEncoding.scale = 1.0f;
+  dummy_qp.scaleOffsetEncoding.offset = 0;
+  ORT_RETURN_IF_ERROR(b_info.quant_param.Init(dummy_qp));
+  b_info.qnn_data_type = QNN_DATATYPE_UFIXED_POINT_8;
+  ORT_RETURN_IF_ERROR(zeros_info.quant_param.Init(dummy_qp));
+  zeros_info.qnn_data_type = QNN_DATATYPE_UFIXED_POINT_8;
+
   LOGS(logger, INFO) << " node_name: " << node_name;
   LOGS(logger, INFO) << " a_input_def: " << a_input_def.node_arg.Name();
   LOGS(logger, INFO) << " b_input_def: " << b_input_def.node_arg.Name();
@@ -144,9 +158,9 @@ static Status CreateOrValidateOnQnn(QnnModelWrapper& qnn_model_wrapper,
   QnnTensorWrapper output_tensor;
 
   ORT_RETURN_IF_ERROR(qnn_model_wrapper.MakeTensorWrapper(a_input_def, a_input_tensor));
-  ORT_RETURN_IF_ERROR(qnn_model_wrapper.MakeTensorWrapper(b_input_def, b_input_tensor));
+  ORT_RETURN_IF_ERROR(qnn_model_wrapper.MakeTensorWrapper(b_info, b_input_def.node_arg.Name(), b_input_tensor));
   ORT_RETURN_IF_ERROR(qnn_model_wrapper.MakeTensorWrapper(scale_input_def, scale_input_tensor));
-  ORT_RETURN_IF_ERROR(qnn_model_wrapper.MakeTensorWrapper(zeros_input_def, zeros_input_tensor));
+  ORT_RETURN_IF_ERROR(qnn_model_wrapper.MakeTensorWrapper(zeros_info, zeros_input_def.node_arg.Name(), zeros_input_tensor));
   ORT_RETURN_IF_ERROR(qnn_model_wrapper.MakeTensorWrapper(output_def, output_tensor));
 
   // currently there is only one valid set of paramters for this op.
@@ -176,25 +190,34 @@ static Status CreateOrValidateOnQnn(QnnModelWrapper& qnn_model_wrapper,
   for (const auto& name : param_tensor_names) {
     LOGS(logger, INFO) << "  - " << name;
   }
-
-  ORT_RETURN_IF_NOT(qnn_model_wrapper.AddParamWrapper(std::move(bits_wrapper)), "Failed to add param");
-  LOGS(logger, INFO) << "Added bits param wrapper." << bits_wrapper.GetParamTensorName();
-  ORT_RETURN_IF_NOT(qnn_model_wrapper.AddParamWrapper(std::move(block_size_wrapper)), "Failed to add param");
-  ORT_RETURN_IF_NOT(qnn_model_wrapper.AddParamWrapper(std::move(K_wrapper)), "Failed to add param");
-  ORT_RETURN_IF_NOT(qnn_model_wrapper.AddParamWrapper(std::move(N_wrapper)), "Failed to add param");
-  ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(a_input_tensor)), "Failed to add input");
-  ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(b_input_tensor)), "Failed to add input");
-  ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(scale_input_tensor)), "Failed to add input");
-  ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(zeros_input_tensor)), "Failed to add input");
-  ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(output_tensor)), "Failed to add output");
-  ORT_RETURN_IF_NOT(qnn_model_wrapper.CreateQnnNode(node_name,
-                                                    "MatMulNBits",
-                                                    "MatMulNBits",
-                                                    {a_input_def.node_arg.Name(), b_input_def.node_arg.Name(), scale_input_def.node_arg.Name(), zeros_input_def.node_arg.Name()},
-                                                    {output_def.node_arg.Name()},
-                                                    std::move(param_tensor_names),
-                                                    validate),
-                    "Failed to add fused MatMulNBits fused node.");
+  if(validate){
+    ORT_RETURN_IF_ERROR(qnn_model_wrapper.ValidateQnnNode(node_name,
+                                                      "MatMulNBits",
+                                                      "MatMulNBits",
+                                                      {a_input_tensor.GetQnnTensor(), b_input_tensor.GetQnnTensor(), scale_input_tensor.GetQnnTensor(), zeros_input_tensor.GetQnnTensor()},
+                                                      {output_tensor.GetQnnTensor()},
+                                                      {bits_wrapper.GetQnnParam(), block_size_wrapper.GetQnnParam(), K_wrapper.GetQnnParam(), N_wrapper.GetQnnParam()}));
+  }
+  else{
+    ORT_RETURN_IF_NOT(qnn_model_wrapper.AddParamWrapper(std::move(bits_wrapper)), "Failed to add param");
+    LOGS(logger, INFO) << "Added bits param wrapper." << bits_wrapper.GetParamTensorName();
+    ORT_RETURN_IF_NOT(qnn_model_wrapper.AddParamWrapper(std::move(block_size_wrapper)), "Failed to add param");
+    ORT_RETURN_IF_NOT(qnn_model_wrapper.AddParamWrapper(std::move(K_wrapper)), "Failed to add param");
+    ORT_RETURN_IF_NOT(qnn_model_wrapper.AddParamWrapper(std::move(N_wrapper)), "Failed to add param");
+    ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(a_input_tensor)), "Failed to add input");
+    ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(b_input_tensor)), "Failed to add input");
+    ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(scale_input_tensor)), "Failed to add input");
+    ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(zeros_input_tensor)), "Failed to add input");
+    ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(output_tensor)), "Failed to add output");
+    ORT_RETURN_IF_NOT(qnn_model_wrapper.CreateQnnNode(node_name,
+                                                      "MatMulNBits",
+                                                      "MatMulNBits",
+                                                      {a_input_def.node_arg.Name(), b_input_def.node_arg.Name(), scale_input_def.node_arg.Name(), zeros_input_def.node_arg.Name()},
+                                                      {output_def.node_arg.Name()},
+                                                      std::move(param_tensor_names),
+                                                      validate),
+                      "Failed to add fused MatMulNBits fused node.");
+    }
 
   return Status::OK();
 }

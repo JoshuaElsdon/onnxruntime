@@ -13,6 +13,7 @@
 #include "core/providers/qnn/builder/qnn_backend_manager.h"
 #include "core/providers/qnn/builder/qnn_model.h"
 #include "core/providers/qnn/builder/qnn_configs_helper.h"
+#include "core/providers/qnn/builder/qnn_node_group.h"
 #include "core/providers/qnn/rpcmem_library.h"
 #include "HTP/QnnHtpGraph.h"
 
@@ -53,7 +54,8 @@ class QNNExecutionProvider : public IExecutionProvider {
   std::unordered_set<const Node*> GetSupportedNodes(const GraphViewer& graph_viewer,
                                                     const std::unordered_map<const Node*, const NodeUnit*>& node_unit_map,
                                                     const size_t node_unit_size,
-                                                    const logging::Logger& logger) const;
+                                                    const logging::Logger& logger,
+                                      std::vector<std::unique_ptr<qnn::IQnnNodeGroup>> &qnn_node_groups) const;
 
   Status CreateComputeFunc(std::vector<NodeComputeInfo>& node_compute_funcs,
                            const logging::Logger& logger);

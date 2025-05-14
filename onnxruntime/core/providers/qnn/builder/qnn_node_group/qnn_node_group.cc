@@ -156,11 +156,15 @@ static Status GetQnnNodeGroupsImpl(/*out*/ std::vector<std::unique_ptr<IQnnNodeG
                                                                     logger);
 
     if (fused_node_group) {
+      // get the target node unit name and print it
+      const NodeUnit* target_node_unit = fused_node_group->GetTargetNodeUnit();
+      LOGS(logger, INFO) << "JOSHUA Fused node group target: " << target_node_unit->Name();
       const size_t index = qnn_node_groups.size();
       fused_qnn_node_group_indices[fused_node_group.get()] = index;
 
       for (const NodeUnit* fused_node_unit : fused_node_group->GetNodeUnits()) {
         assert(fused_node_unit != nullptr);
+        LOGS(logger, INFO) << "JOSHUA adding node unit to qnn node group linking {" << fused_node_unit->Name() << "," << target_node_unit->Name() << "}";
         node_unit_to_qnn_node_group.insert({fused_node_unit, fused_node_group.get()});
       }
 
@@ -192,6 +196,12 @@ static Status GetQnnNodeGroupsImpl(/*out*/ std::vector<std::unique_ptr<IQnnNodeG
   }
 
   assert(qnn_node_groups.size() == sorted_qnn_node_group_indices.size());
+
+  // print the qnn_node_groups
+  for (size_t i = 0; i < qnn_node_groups.size(); ++i) {
+    const auto& qnn_node_group = qnn_node_groups[i];
+    LOGS(logger, INFO) << "QNN Node group " << i << ": " << qnn_node_group->Type() << " - " << qnn_node_group->GetTargetNodeUnit()->Name();
+  }
 
   return Status::OK();
 }

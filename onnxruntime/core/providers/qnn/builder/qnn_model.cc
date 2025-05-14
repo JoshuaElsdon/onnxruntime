@@ -105,6 +105,11 @@ Status QnnModel::ComposeGraph(const GraphViewer& graph_viewer,
   std::unordered_map<const Node*, const NodeUnit*> node_unit_map;
   std::tie(node_unit_holder, node_unit_map) = GetQDQNodeUnits(graph_viewer, logger);
 
+  // print the name of all the nodes in node_unit_holder
+  for (const auto& node_unit : node_unit_holder) {
+    LOGS(logger, VERBOSE) << "NodeUnit name: " << node_unit->Name();
+  }
+
   // This name must be same with the EPContext node name
   const auto& graph_name = fused_node.Name();
   ORT_RETURN_IF_ERROR(SetGraphInputOutputInfo(graph_viewer, fused_node, logger));
@@ -130,6 +135,7 @@ Status QnnModel::ComposeGraph(const GraphViewer& graph_viewer,
                                             node_unit_holder.size(), logger));
 
   for (const std::unique_ptr<qnn::IQnnNodeGroup>& qnn_node_group : qnn_node_groups) {
+    LOGS(logger, VERBOSE) << "JOSHUA Compose Graph QNN Node group: " << qnn_node_group->Type() << " - " << qnn_node_group->GetTargetNodeUnit()->Name();
     Status status = qnn_node_group->AddToModelBuilder(qnn_model_wrapper, logger);
 
     if (!status.IsOK()) {

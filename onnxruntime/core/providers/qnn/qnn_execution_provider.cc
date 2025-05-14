@@ -523,7 +523,8 @@ std::unordered_set<const Node*>
 QNNExecutionProvider::GetSupportedNodes(const GraphViewer& graph_viewer,
                                         const std::unordered_map<const Node*, const NodeUnit*>& node_unit_map,
                                         const size_t node_unit_size,
-                                        const logging::Logger& logger) const {
+                                        const logging::Logger& logger,
+                                      std::vector<std::unique_ptr<qnn::IQnnNodeGroup>> &qnn_node_groups) const {
   std::unordered_set<const Node*> supported_nodes{};
 
   std::unordered_set<std::string> initializer_input_lookup;
@@ -556,7 +557,7 @@ QNNExecutionProvider::GetSupportedNodes(const GraphViewer& graph_viewer,
                                                 qnn_backend_manager_->GetQnnBackendType(),
                                                 model_settings_);
 
-  std::vector<std::unique_ptr<qnn::IQnnNodeGroup>> qnn_node_groups;
+  // std::vector<std::unique_ptr<qnn::IQnnNodeGroup>> qnn_node_groups;
   qnn_node_groups.reserve(node_unit_size);
 
   if (Status status = qnn::GetQnnNodeGroups(qnn_node_groups, qnn_model_wrapper,
@@ -749,8 +750,24 @@ QNNExecutionProvider::GetCapability(const onnxruntime::GraphViewer& graph_viewer
   std::tie(node_unit_holder, node_unit_map) = GetQDQNodeUnits(graph_viewer, logger);
 
   // remove is_qnn_ctx_model related code
+  std::vector<std::unique_ptr<qnn::IQnnNodeGroup>> qnn_node_groups;
   const auto supported_nodes = GetSupportedNodes(graph_viewer, node_unit_map,
-                                                 node_unit_holder.size(), logger);
+                                                 node_unit_holder.size(), logger, qnn_node_groups);
+
+  // update the node_unit_map so that the nodes point to the correct node unit according to the qnn_node_groups
+  for (const auto& qnn_node_group : qnn_node_groups) {
+    auto  target_node_unit = qnn_node_group->GetTargetNodeUnit();
+    LOGS(logger, VERBOSE) << "Updating QNN node group: " << qnn_node_group->Type() << " target node unit: " << qnn_node_group->GetTargetNodeUnit()->OpType();
+    for (const NodeUnit* node_unit : qnn_node_group->GetNodeUnits()) {
+      LOGS(logger, VERBOSE) << "NodeUnit: [1] index: [" << node_unit->Index()
+                            << "] name: [" << node_unit->Name()
+                            << "] Operator type: [" << node_unit->OpType()
+                            << "] index: [" << node_unit->Index() << "]";
+      for (const Node* node : node_unit->GetAllNodesInGroup()) {
+        node_unit_map[node] = target_node_unit;
+      }
+    }
+  }
 
   // Helper function that returns a string that lists all unsupported nodes.
   // Ex: { name: mul_123, type: Mul }, {}, ...
@@ -778,6 +795,29 @@ QNNExecutionProvider::GetCapability(const onnxruntime::GraphViewer& graph_viewer
   }
 
   size_t num_of_supported_nodes = 0;
+
+  // print out the supported nodes
+  for (const Node* node : supported_nodes) {
+    LOGS(logger, VERBOSE) << "Node supported: [1] index: [" << node->Index()
+                          << "] name: [" << node->Name()
+                          << "] Operator type: [" << node->OpType()
+                          << "] index: [" << node->Index() << "]";
+  }
+
+  // print out the node_unit_map
+  for (const auto& node_unit_pair : node_unit_map) {
+    const Node* node = node_unit_pair.first;
+    const NodeUnit* node_unit = node_unit_pair.second;
+
+    LOGS(logger, VERBOSE) << "NodeUnit: [1] index: [" << node_unit->Index()
+                          << "] name: [" << node_unit->Name()
+                          << "] Operator type: [" << node_unit->OpType()
+                          << "] index: [" << node_unit->Index() << "]";
+    LOGS(logger, VERBOSE) << "Node: [1] index: [" << node->Index()
+                          << "] name: [" << node->Name()
+                          << "] Operator type: [" << node->OpType()
+                          << "] index: [" << node->Index() << "]";
+  }
 
   // Create partitions from supported nodes.
   std::vector<std::unique_ptr<ComputeCapability>> partitions = utils::CreateSupportedPartitions(
@@ -918,6 +958,7 @@ Status QNNExecutionProvider::CompileFromOrtGraph(const std::vector<FusedNodeAndG
       json_graph_filepath = path.string();
       LOGS(logger, VERBOSE) << "Dumping QNN graph to: " << json_graph_filepath;
     }
+
 
     ORT_RETURN_IF_ERROR(qnn_model->ComposeGraph(graph_viewer, fused_node, model_settings_, logger,
                                                 graph_configs_builder.GetQnnConfigs(), json_graph_filepath));
