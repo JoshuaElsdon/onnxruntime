@@ -89,8 +89,6 @@ void CreateLayerNormOpBuilder(const std::string& op_type, OpBuilderRegistrations
 
 void CreateLRNOpBuilder(const std::string& op_type, OpBuilderRegistrations& op_registrations);
 
-void CreateMatMulNBitsOpBuilder(const std::string& op_type, OpBuilderRegistrations& op_registrations);
-
 void CreateTransposeOpBuilder(const std::string& op_type, OpBuilderRegistrations& op_registrations);
 
 void CreatePadOpBuilder(const std::string& op_type, OpBuilderRegistrations& op_registrations);
