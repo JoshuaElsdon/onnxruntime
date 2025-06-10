@@ -188,7 +188,6 @@ static Status CreateOrValidateOnQnn(QnnModelWrapper& qnn_model_wrapper,
     }
   }
 
-
   QnnParamWrapper bits_wrapper(input_dq_unit.Index(), node_name, "bits", bits_scalar);
   QnnParamWrapper block_size_wrapper(input_dq_unit.Index(), node_name, "block_size", block_size_scalar);
   QnnParamWrapper K_wrapper(input_dq_unit.Index(), node_name, "K", K_scalar);
@@ -215,11 +214,9 @@ static Status CreateOrValidateOnQnn(QnnModelWrapper& qnn_model_wrapper,
   ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(zeros_input_tensor)), "Failed to add input");
   ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(output_tensor)), "Failed to add output");
 
-  if (num_tokens == 1)
-  {
-   LOGS(logger, INFO) << "Using the MatMulNBits kernel" << validate;
+  if (num_tokens == 1) {
+    LOGS(logger, INFO) << "Using the MatMulNBits kernel" << validate;
 
-    
     ORT_RETURN_IF_NOT(qnn_model_wrapper.CreateQnnNode(node_name,
                                                       "MatMulNBits",
                                                       "MatMulNBits",
@@ -229,34 +226,33 @@ static Status CreateOrValidateOnQnn(QnnModelWrapper& qnn_model_wrapper,
                                                       validate),
                       "Failed to add fused MatMulNBits fused node.");
 
-    }
-  else {
+  } else {
     LOGS(logger, INFO) << "Using the unpack_weights kernel with regular matmul, num tokens:" << num_tokens;
-    // rather than using the MatMulNBits kernel, we will use the unpack_weights kernel to get the weights, then we will pass these to a regular MatMul. 
+    // rather than using the MatMulNBits kernel, we will use the unpack_weights kernel to get the weights, then we will pass these to a regular MatMul.
+    TensorInfo weights_info;
+    weights_info.shape = {K_scalar.uint32Value, N_scalar.uint32Value};
 
-  TensorInfo weights_info;
-  weights_info.shape = {K_scalar.uint32Value, N_scalar.uint32Value};
-  weights_info.qnn_data_type = QNN_DATATYPE_UFIXED_POINT_8;
-  // std::vector<float> scales(K_scalar.uint32Value, 1.0f);           // or fill with real data
-  // std::vector<int32_t> offsets(K_scalar.uint32Value, 0);           // or fill with real data
-  // weights_info.quant_param = QnnQuantParamsWrapper(gsl::span<const float>(scales), gsl::span<const int32_t>(offsets),1, false);
-  weights_info.quant_param = QnnQuantParamsWrapper(0.0381136f, -131);
-  weights_info.is_initializer = false;
+    weights_info.qnn_data_type = QNN_DATATYPE_UFIXED_POINT_8;
 
-  QnnTensorWrapper weights_tensor;
-  ORT_RETURN_IF_ERROR(qnn_model_wrapper.MakeTensorWrapper(weights_info,
-                                                          node_name + "_weights",
-                                                          weights_tensor));
-  ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(weights_tensor)), "Failed to add weights tensor");
-                                                          
-  ORT_RETURN_IF_NOT(qnn_model_wrapper.CreateQnnNode(node_name,
-                                                "UnpackWeightsNBits",
-                                                "UnpackWeightsNBits",
-                                                {b_input_def.node_arg.Name(), scale_input_def.node_arg.Name(), zeros_input_def.node_arg.Name()},
-                                                {node_name + "_weights"},
-                                                std::move(param_tensor_names),
-                                                validate),
-                "Failed to add fused MatMulNBits fused node.");
+    weights_info.quant_param = QnnQuantParamsWrapper(1.0f, 0);
+    weights_info.is_initializer = false;
+
+    std::string weights_name = node_name + "_weights_raw";
+
+    QnnTensorWrapper weights_tensor;
+    ORT_RETURN_IF_ERROR(qnn_model_wrapper.MakeTensorWrapper(weights_info,
+                                                            weights_name,
+                                                            weights_tensor));
+    ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(weights_tensor)), "Failed to add weights tensor");
+
+    ORT_RETURN_IF_NOT(qnn_model_wrapper.CreateQnnNode(node_name,
+                                                      "UnpackWeightsNBits",
+                                                      "UnpackWeightsNBits",
+                                                      {b_input_def.node_arg.Name(), scale_input_def.node_arg.Name(), zeros_input_def.node_arg.Name()},
+                                                      {weights_name},
+                                                      std::move(param_tensor_names),
+                                                      validate),
+                      "Failed to add fused MatMulNBits fused node.");
 
     Qnn_Scalar_t scalar_param = QNN_SCALAR_INIT;
     scalar_param.dataType = QNN_DATATYPE_BOOL_8;
@@ -273,11 +269,10 @@ static Status CreateOrValidateOnQnn(QnnModelWrapper& qnn_model_wrapper,
     qnn_model_wrapper.AddParamWrapper(std::move(transpose_in1_param));
 
     ORT_RETURN_IF_NOT(qnn_model_wrapper.CreateQnnNode(node_name + "mat_mul", QNN_OP_PACKAGE_NAME_QTI_AISW,
-                                                    QNN_OP_MAT_MUL,
-                                                    {a_input_def.node_arg.Name(), node_name + "_weights"}, {output_def.node_arg.Name()},
-                                                    std::move(param_tensor_names), validate),
+                                                      QNN_OP_MAT_MUL,
+                                                      {a_input_def.node_arg.Name(), weights_name}, {output_def.node_arg.Name()},
+                                                      std::move(param_tensor_names), validate),
                       "Failed to add fused Matmul node.");
-
   }
 
   return Status::OK();
