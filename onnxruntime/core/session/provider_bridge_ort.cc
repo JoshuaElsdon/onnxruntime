@@ -656,6 +656,14 @@ struct ProviderHostImpl : ProviderHost {
     return p->float_data(index);
   }
 
+  int TensorProto__int32_data_size(const ONNX_NAMESPACE::TensorProto* p) {
+    return p->int32_data_size();
+  }
+
+  int32_t TensorProto__int32_data(const ONNX_NAMESPACE::TensorProto* p, int index) {
+    return p->int32_data(index);
+  }
+
   // TensorProtos (wrapped)
   ONNX_NAMESPACE::TensorProto* TensorProtos__Add(ONNX_NAMESPACE::TensorProtos* p) override { return p->Add(); }
   int TensorProtos__size(ONNX_NAMESPACE::TensorProtos* p) override { return p->size(); }

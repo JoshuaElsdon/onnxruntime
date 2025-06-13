@@ -283,6 +283,14 @@ struct TensorProto final {
     return g_host->TensorProto__float_data(this, index);
   }
 
+  int int32_data_size() const {
+    return g_host->TensorProto__int32_data_size(this);
+  }
+
+  uint32_t int32_data(int index) const {
+    return g_host->TensorProto__int32_data(this, index);
+  }
+
   TensorProto() = delete;
   TensorProto(const TensorProto&) = delete;
 };
