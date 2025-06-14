@@ -328,19 +328,8 @@ static Status CreateOrValidateOnQnn(QnnModelWrapper& qnn_model_wrapper,
     const Node& dq_node = scale_dq_unit.GetNode();
     const auto& input_defs = dq_node.InputDefs();
 
-    const InitializedTensorSet& initializers = qnn_model_wrapper.GetInitializerTensors();
-    // list these
-    LOGS(logger, INFO) << "Initialized tensors:";
-    for (const auto& initializer : initializers) {
-      LOGS(logger, INFO) << "  - " << initializer.first;
-      // print the first value of the initializer
-      const ONNX_NAMESPACE::TensorProto* tensor_proto = initializer.second;
-        if (tensor_proto->raw_data().size() >= 1) {
-          LOGS(logger, INFO) << "    First value: ";
-          LOGS(logger, INFO) << "      - " << static_cast<int>(tensor_proto->raw_data()[0]);  
-        }
-    
-    }
+    float scale_scale = 1.0f;
+    int32_t scale_zero = 100;
 
     if (input_defs.size() >= 2) {
       const NodeArg* scale_tensor_arg = input_defs[1];  // the "scale" input
@@ -348,15 +337,14 @@ static Status CreateOrValidateOnQnn(QnnModelWrapper& qnn_model_wrapper,
       if (qnn_model_wrapper.GetGraphViewer().GetInitializedTensor(scale_tensor_arg->Name(), scale_initializer)) {
         LOGS(logger, INFO) << "Found scale scale initializer: " << scale_initializer->name();
         PrintTensorProto(scale_initializer);
-        float scale_val = 1.0f;
         if (scale_initializer->has_raw_data()) {
-          scale_val = *reinterpret_cast<const float*>(scale_initializer->raw_data().data());
+          scale_scale = *reinterpret_cast<const float*>(scale_initializer->raw_data().data());
         } else {
           float data = scale_initializer->float_data(0);
           LOGS(logger, INFO) << "Using float_data: " << data;
-          scale_val = data;
+          scale_scale = data;
         }
-        LOGS(logger, INFO) << "Scale value: " << scale_val;
+        LOGS(logger, INFO) << "Scale value: " << scale_scale;
       }
     }
     if (input_defs.size() >= 3) {
@@ -365,16 +353,15 @@ static Status CreateOrValidateOnQnn(QnnModelWrapper& qnn_model_wrapper,
       if (qnn_model_wrapper.GetGraphViewer().GetInitializedTensor(zero_tensor_arg->Name(), zero_initializer)) {
         LOGS(logger, INFO) << "Found zeros initializer: " << zero_initializer->name();
         PrintTensorProto(zero_initializer);
-        int32_t zero_val = 100;
         if (zero_initializer->has_raw_data()) {
-          zero_val = *reinterpret_cast<const float*>(zero_initializer->raw_data().data());
+          scale_zero = *reinterpret_cast<const int32_t*>(zero_initializer->raw_data().data());
         } else {
           LOGS(logger, INFO) << "Using uint16_data:";
           int32_t data = zero_initializer->int32_data(0);
           LOGS(logger, INFO) << "Using uint16_data: " << data;
-          zero_val = data;
+          scale_zero = data;
         }
-        LOGS(logger, INFO) << "Zero value: " << zero_val;
+        LOGS(logger, INFO) << "Zero value: " << scale_zero;
       }
     }
 
@@ -390,20 +377,63 @@ static Status CreateOrValidateOnQnn(QnnModelWrapper& qnn_model_wrapper,
       unpacked_b_values.push_back(byte & 0x03);         // last 2 bits
     }
 
-    // print out some values
-    LOGS(logger, INFO) << "Unpacked B tensor values: ";
-    for (size_t i = 0; i < std::min<size_t>(unpacked_b_values.size(), 10); ++i) {  // print first 10 values
-      LOGS(logger, INFO) << "  - " << static_cast<int>(unpacked_b_values[i]);
-    } 
-    // print out some zeros
-    LOGS(logger, INFO) << "Zeros tensor values: ";
-    for (size_t i = 0; i < std::min<size_t>(zero_values.size(), 10); ++i) {  // print first 10 values
-      LOGS(logger, INFO) << "  - " << static_cast<int>(zero_values[i]);
+    // unpack the zeros tensor as 2 bit values
+    std::vector<uint8_t> unpacked_zeros_values;
+    unpacked_zeros_values.reserve(zero_values.size() * 4);  // each 2-bit value will expand to 4 bits
+    for (size_t i = 0; i < zero_values.size(); ++i) {
+      uint8_t byte = zero_values[i];
+      // Extract 4 2-bit values from the byte
+      unpacked_zeros_values.push_back((byte >> 6) & 0x03);  // first 2 bits
+      unpacked_zeros_values.push_back((byte >> 4) & 0x03);  // second 2 bits
+      unpacked_zeros_values.push_back((byte >> 2) & 0x03);  // third 2 bits
+      unpacked_zeros_values.push_back(byte & 0x03);         // last 2 bits
     }
-    // print out some scales
-    LOGS(logger, INFO) << "Scale tensor values: ";  
-    for (size_t i = 0; i < std::min<size_t>(scale_values.size(), 10); ++i) {  // print first 10 values
-      LOGS(logger, INFO) << "  - " << static_cast<int>(scale_values[i]);
+
+    // get the scales
+    std::vector<float> unpacked_scales;
+    unpacked_scales.reserve(scale_values.size());
+    for (size_t i = 0; i < scale_values.size(); i=i+2) {
+      // Convert each uint8_t scale value to float
+      unpacked_scales.push_back(static_cast<float>(scale_values[i] + scale_values[i+1]*256 - scale_zero) * scale_scale);  // Assuming scale is in [0, 255]
+    }
+
+    // loop through all the weights in batches of 64 and subtract a zero value and scale the value
+    std::vector<float> weights_float;
+    weights_float.reserve(unpacked_b_values.size());  // reserve enough space for the weights
+    for (size_t group = 0; group < unpacked_b_values.size() / 64; ++group)
+    {
+      for (size_t j = 0; j < 64; ++j) {
+        size_t index = group * 64 + j;
+        if (index < unpacked_b_values.size()) {
+          // Get the 2-bit value, subtract the zero value, and scale it
+          float weight_value = static_cast<float>(unpacked_b_values[index] - unpacked_zeros_values[group])* unpacked_scales[group];
+          weights_float.push_back(weight_value);
+        }
+      }
+    }
+
+    // get the min and max of the weights
+    float min_weight = std::numeric_limits<float>::max();
+    float max_weight = std::numeric_limits<float>::lowest();
+    for (const auto& weight : weights_float) {
+      if (weight < min_weight) {
+        min_weight = weight;
+      }
+      if (weight > max_weight) {
+        max_weight = weight;
+      }
+    }
+
+    LOGS(logger, INFO) << "Weights min: " << min_weight << ", max: " << max_weight;
+
+    // convert these to a scale and offset for a 8 bit unsigned fixed point representation
+    float scale = 255.0f / (max_weight - min_weight);
+    int32_t offset = static_cast<int32_t>(-min_weight * scale);
+
+    // print the first 5 weights
+    LOGS(logger, INFO) << "Unpacked weights (first 5): ";
+    for (size_t i = 0; i < std::min<size_t>(5, weights_float.size()); ++i) {
+      LOGS(logger, INFO) << "  " << i << ": " << weights_float[i];
     }
 
     std::string weights_name = node_name + "_weights_raw";
@@ -412,7 +442,7 @@ static Status CreateOrValidateOnQnn(QnnModelWrapper& qnn_model_wrapper,
     QnnTensorWrapper weights_tensor(weights_name,
                                     QNN_TENSOR_TYPE_NATIVE,
                                     QNN_DATATYPE_UFIXED_POINT_8,
-                                    QnnQuantParamsWrapper(1.0f, 0),
+                                    QnnQuantParamsWrapper(scale, offset),
                                     std::move(weights_shape));
 
     ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(weights_tensor)), "Failed to add tensor.");
