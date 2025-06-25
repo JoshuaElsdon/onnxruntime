@@ -455,7 +455,7 @@ static Status CreateOrValidateOnQnn(QnnModelWrapper& qnn_model_wrapper,
 
     // this uses the unpack operator to unpack the weights at runtime.
     
-    std::vector<uint32_t> weights_shape = {K_scalar.uint32Value, N_scalar.uint32Value};
+    std::vector<uint32_t> weights_shape = {N_scalar.uint32Value, K_scalar.uint32Value};
 
     QnnTensorWrapper weights_tensor(weights_name,
                                     QNN_TENSOR_TYPE_NATIVE,
