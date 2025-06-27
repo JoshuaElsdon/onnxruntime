@@ -30,6 +30,7 @@ struct TensorInfo {
 
 struct ModelSettings {
   bool offload_graph_io_quantization = false;
+  std::string model_hints = ""; // used to allow quicker changes between algorithms, remove when stable.
 };
 
 class QnnModelWrapper {

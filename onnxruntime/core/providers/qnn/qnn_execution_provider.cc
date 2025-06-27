@@ -402,11 +402,19 @@ QNNExecutionProvider::QNNExecutionProvider(const ProviderOptions& provider_optio
     op_pack_target_ = op_pack_target_pos->second;
     LOGS_DEFAULT(VERBOSE) << "Custom op package target: " << op_pack_target_;
   }
+
+  static const std::string QNN_CUSTOM_OP_PACKAGE_HINT = "op_pack_hint";
+  auto op_pack_hint_pos = provider_options_map.find(QNN_CUSTOM_OP_PACKAGE_HINT);
+  if (op_pack_hint_pos != provider_options_map.end()) {
+    model_settings_.model_hints = op_pack_hint_pos->second;
+    std::cout << "Model hints: " << model_settings_.model_hints << std::endl;
+
+  }
   qnn_backend_manager_ = qnn::QnnBackendManager::Create(
       qnn::QnnBackendManagerConfig{backend_path,
-                                  op_pack_path_,
-                                  op_pack_interface_,
-                                  op_pack_target_,
+                                   op_pack_path_,
+                                   op_pack_interface_,
+                                   op_pack_target_,
                                    profiling_level_etw,
                                    profiling_level,
                                    profiling_file_path,
