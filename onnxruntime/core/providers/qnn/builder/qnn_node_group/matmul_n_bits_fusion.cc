@@ -657,26 +657,26 @@ static Status CreateOrValidateOnQnn(QnnModelWrapper& qnn_model_wrapper,
                       "Failed to add fused MatMulNBits fused node.");
 
 
-    std::vector<std::string> param_tensor_names;
+    std::vector<std::string> param_tensor_names_mul;
 
     Qnn_Scalar_t t0 = QNN_SCALAR_INIT; 
     t0.dataType    = QNN_DATATYPE_BOOL_8; 
     t0.bool8Value  = 0;
     QnnParamWrapper p0(input_dq_unit.Index(), input_dq_unit.Name(), QNN_OP_MAT_MUL_PARAM_TRANSPOSE_IN0, t0);
-    param_tensor_names.push_back(p0.GetParamTensorName());
+    param_tensor_names_mul.push_back(p0.GetParamTensorName());
     qnn_model_wrapper.AddParamWrapper(std::move(p0));
 
     Qnn_Scalar_t t1 = QNN_SCALAR_INIT; 
     t1.dataType    = QNN_DATATYPE_BOOL_8; 
     t1.bool8Value  = 1; // transpose the wieght input.
     QnnParamWrapper p1(input_dq_unit.Index(), input_dq_unit.Name(), QNN_OP_MAT_MUL_PARAM_TRANSPOSE_IN1, t1);
-    param_tensor_names.push_back(p1.GetParamTensorName());
+    param_tensor_names_mul.push_back(p1.GetParamTensorName());
     qnn_model_wrapper.AddParamWrapper(std::move(p1));
 
     ORT_RETURN_IF_NOT(qnn_model_wrapper.CreateQnnNode(node_name + "mat_mul", QNN_OP_PACKAGE_NAME_QTI_AISW,
                                                       QNN_OP_MAT_MUL,
                                                       {a_input_def.node_arg.Name(), weights_name}, {output_def.node_arg.Name()},
-                                                      std::move(param_tensor_names), validate),
+                                                      std::move(param_tensor_names_mul), validate),
                       "Failed to add fused Matmul node.");
   }
 
