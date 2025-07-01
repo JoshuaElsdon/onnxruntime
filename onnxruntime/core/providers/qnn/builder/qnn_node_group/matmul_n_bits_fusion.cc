@@ -272,6 +272,12 @@ static Status CreateOrValidateOnQnn(QnnModelWrapper& qnn_model_wrapper,
                                     const NodeUnit& scale_dq_unit,
                                     bool validate,
                                     const logging::Logger& logger) {
+
+  // get the hints
+  const ModelSettings model_settings = qnn_model_wrapper.GetModelSettings();
+  bool is_shuffled = model_settings.model_hints.find("shuffle")!= std::string::npos;
+  bool use_scratch = model_settings.model_hints.find("scratch")!= std::string::npos;
+
   LOGS(logger, INFO) << "CreateOrValidateOnQnn called. validate: " << validate;
   assert(matmul_n_bits_unit.OpType() == "MatMulNBits" && input_dq_unit.OpType() == "DequantizeLinear" &&
          output_q_unit.OpType() == "QuantizeLinear" && scale_dq_unit.OpType() == "DequantizeLinear");
@@ -348,7 +354,7 @@ static Status CreateOrValidateOnQnn(QnnModelWrapper& qnn_model_wrapper,
   QnnTensorWrapper a_input_tensor, b_input_tensor, scale_input_tensor, zeros_input_tensor;
   QnnTensorWrapper output_tensor;
 
-  const ModelSettings model_settings = qnn_model_wrapper.GetModelSettings();
+  
 
   ORT_RETURN_IF_ERROR(qnn_model_wrapper.MakeTensorWrapper(a_input_def, a_input_tensor));
   ORT_RETURN_IF_ERROR(qnn_model_wrapper.MakeTensorWrapper(output_def, output_tensor));
@@ -398,7 +404,7 @@ static Status CreateOrValidateOnQnn(QnnModelWrapper& qnn_model_wrapper,
     }
 
 
-  if (model_settings.model_hints == "") {
+  if (!is_shuffled) {
     ORT_RETURN_IF_ERROR(qnn_model_wrapper.MakeTensorWrapper(b_input_def, b_input_tensor));
     ORT_RETURN_IF_ERROR(qnn_model_wrapper.MakeTensorWrapper(scale_input_def, scale_input_tensor));
     ORT_RETURN_IF_ERROR(qnn_model_wrapper.MakeTensorWrapper(zeros_input_def, zeros_input_tensor));
@@ -408,7 +414,7 @@ static Status CreateOrValidateOnQnn(QnnModelWrapper& qnn_model_wrapper,
     ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(zeros_input_tensor)), "Failed to add input");
   }
 
-  else if (model_settings.model_hints == "shuffle") {
+  else if (is_shuffled) {
     LOGS(logger, INFO) << "Model hints is 'shuffle'.";
     // here we modify the input tensors for B, scales and zeros to be shuffled versions of the original tensors. 
     // using teh split_tile_2bit, split_transpose_2bit and transpose functions to create the shuffled tensors.
@@ -500,11 +506,6 @@ static Status CreateOrValidateOnQnn(QnnModelWrapper& qnn_model_wrapper,
 
   }
 
-  else {
-    // error if model_hints is not empty and not "shuffle"
-    return ORT_MAKE_STATUS(ONNXRUNTIME, INVALID_ARGUMENT, "Model hints must be empty or 'shuffle'. Found: ", model_settings.model_hints);
-  }
-
   ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(a_input_tensor)), "Failed to add input");
 
   ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(output_tensor)), "Failed to add output");
@@ -512,14 +513,54 @@ static Status CreateOrValidateOnQnn(QnnModelWrapper& qnn_model_wrapper,
   if (num_tokens == 1) {
     LOGS(logger, INFO) << "Using the MatMulNBits kernel" << validate;
 
+    LOGS(logger, INFO) << "Making scratch buffer " << validate;
+
+    if (use_scratch) {
+        // scratch buffer sizes, maybe move inside a class
+    uint32_t SCALES_COUNT = N_scalar.uint32Value * K_scalar.uint32Value / block_size_scalar.uint32Value;
+    int32_t GROUP_SIZE = 4;
+    int32_t LUT_WIDTH = 2 << (GROUP_SIZE - 1);
+
+    size_t x_data_fp_size = K_scalar.uint32Value *sizeof(uint16_t); // same size as Float16
+    size_t scales_data_fp_size = SCALES_COUNT * sizeof(uint16_t);
+    size_t result_size = N_scalar.uint32Value * sizeof(float);
+    size_t bit_sum_size = bits_scalar.uint32Value * N_scalar.uint32Value * sizeof(uint32_t);
+    size_t lut_size = (K_scalar.uint32Value / GROUP_SIZE) * LUT_WIDTH * sizeof(uint16_t);
+    size_t offset_size = (K_scalar.uint32Value / block_size_scalar.uint32Value) * sizeof(uint16_t);
+
+    size_t scratch_size = x_data_fp_size + scales_data_fp_size + result_size + bit_sum_size + lut_size + offset_size;
+
+    // scratch shape
+    std::vector<uint32_t> scratch_shape = {1, 1, 1, (uint32_t)scratch_size*2};  // This is a placeholder, actual shape will be determined by the kernel.
+
+    QnnTensorWrapper scratch_tensor_wrapper(
+        "scratch"+node_name,
+        QNN_TENSOR_TYPE_NATIVE,  // It's an initializer
+        QNN_DATATYPE_UINT_8,
+        std::move(QnnQuantParamsWrapper()), // If unquantized, otherwise pass scale/offset
+        std::move(scratch_shape)
+    );
+    ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(scratch_tensor_wrapper)), "Failed to add scratch tensor");
+
     ORT_RETURN_IF_NOT(qnn_model_wrapper.CreateQnnNode(node_name,
                                                       "MatMulNBits",
                                                       "MatMulNBits",
                                                       {a_input_def.node_arg.Name(), b_input_name, scale_input_name, zeros_input_name},
-                                                      {output_def.node_arg.Name()},
+                                                      {output_def.node_arg.Name(), "scratch"+node_name},
                                                       std::move(param_tensor_names),
                                                       validate),
                       "Failed to add fused MatMulNBits fused node.");
+    } else {
+      LOGS(logger, INFO) << "Using the MatMulNBits kernel without scratch buffer";
+      ORT_RETURN_IF_NOT(qnn_model_wrapper.CreateQnnNode(node_name,
+                                                        "MatMulNBits",
+                                                        "MatMulNBits",
+                                                        {a_input_def.node_arg.Name(), b_input_name, scale_input_name, zeros_input_name},
+                                                        {output_def.node_arg.Name()},
+                                                        std::move(param_tensor_names),
+                                                        validate),
+                        "Failed to add fused MatMulNBits fused node without scratch buffer.");
+    }
 
   } else {
     LOGS(logger, INFO) << "Using the unpack_weights kernel with regular matmul, num tokens:" << num_tokens;
