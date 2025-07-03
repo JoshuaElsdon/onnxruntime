@@ -531,11 +531,11 @@ static Status CreateOrValidateOnQnn(QnnModelWrapper& qnn_model_wrapper,
     size_t scratch_size = x_data_fp_size + scales_data_fp_size + result_size + bit_sum_size + lut_size + offset_size;
 
     // scratch shape
-    std::vector<uint32_t> scratch_shape = {1, 1, 1, (uint32_t)scratch_size*2};  // This is a placeholder, actual shape will be determined by the kernel.
+    std::vector<uint32_t> scratch_shape = {1, 1, 1, (uint32_t)scratch_size};  // This is a placeholder, actual shape will be determined by the kernel.
 
     QnnTensorWrapper scratch_tensor_wrapper(
         "scratch"+node_name,
-        QNN_TENSOR_TYPE_NATIVE,  // It's an initializer
+        QNN_TENSOR_TYPE_NATIVE, 
         QNN_DATATYPE_UINT_8,
         std::move(QnnQuantParamsWrapper()), // If unquantized, otherwise pass scale/offset
         std::move(scratch_shape)
