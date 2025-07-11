@@ -274,9 +274,36 @@ static Status CreateOrValidateOnQnn(QnnModelWrapper& qnn_model_wrapper,
                                     const logging::Logger& logger) {
 
   // get the hints
+  // print the hints
+  LOGS(logger, INFO) << "Model hints: " << qnn_model_wrapper.GetModelSettings().model_hints;
   const ModelSettings model_settings = qnn_model_wrapper.GetModelSettings();
   bool is_shuffled = model_settings.model_hints.find("shuffle")!= std::string::npos;
   bool use_scratch = model_settings.model_hints.find("scratch")!= std::string::npos;
+
+  bool is_split = model_settings.model_hints.find("split") != std::string::npos;
+  uint32_t target_out_split_size = 0; 
+  if (is_split) {
+    LOGS(logger, INFO) << "split is enabled.";
+    // find the number between split and the next _ 
+    size_t split_pos = model_settings.model_hints.find("split");
+    if (split_pos != std::string::npos) {
+      size_t next_underscore = model_settings.model_hints.find('_', split_pos + 5);
+      if (next_underscore != std::string::npos) {
+        std::string split_size_str = model_settings.model_hints.substr(split_pos + 5, next_underscore - (split_pos + 5));
+        try {
+          target_out_split_size = std::stoul(split_size_str);
+          LOGS(logger, INFO) << "target_out_split_size set to: " << target_out_split_size;
+        } catch (const std::invalid_argument& e) {
+          LOGS(logger, ERROR) << "Invalid split size: " << split_size_str << "";
+        }
+      } else {
+        LOGS(logger, ERROR) << "No underscore found after 'split'";
+      }
+    }
+  }
+  std::vector<std::string> split_b_tensor_names;
+  std::vector<std::string> split_scales_tensor_names;
+  std::vector<std::string> split_zeros_tensor_names;
 
   LOGS(logger, INFO) << "CreateOrValidateOnQnn called. validate: " << validate;
   assert(matmul_n_bits_unit.OpType() == "MatMulNBits" && input_dq_unit.OpType() == "DequantizeLinear" &&
@@ -363,55 +390,182 @@ static Status CreateOrValidateOnQnn(QnnModelWrapper& qnn_model_wrapper,
   std::string scale_input_name = scale_input_def.node_arg.Name();
   std::string zeros_input_name = zeros_input_def.node_arg.Name();
 
-      float scale_scale = 1.0f;
-    int32_t scale_zero = 0;
+  float scale_scale = 1.0f;
+  int32_t scale_zero = 0;
 
-    const Node& dq_node = scale_dq_unit.GetNode();
-    const auto& input_defs = dq_node.InputDefs();
+  const Node& dq_node = scale_dq_unit.GetNode();
+  const auto& input_defs = dq_node.InputDefs();
 
-    if (input_defs.size() >= 2) {
-      const NodeArg* scale_tensor_arg = input_defs[1];  // the "scale" input
-      const ONNX_NAMESPACE::TensorProto* scale_initializer = nullptr;
-      if (qnn_model_wrapper.GetGraphViewer().GetInitializedTensor(scale_tensor_arg->Name(), scale_initializer)) {
-        LOGS(logger, INFO) << "Found scale scale initializer: " << scale_initializer->name();
-        PrintTensorProto(scale_initializer);
-        if (scale_initializer->has_raw_data()) {
-          scale_scale = *reinterpret_cast<const float*>(scale_initializer->raw_data().data());
-        } else {
-          float data = scale_initializer->float_data(0);
-          LOGS(logger, INFO) << "Using float_data: " << data;
-          scale_scale = data;
-        }
-        LOGS(logger, INFO) << "Scale value: " << scale_scale;
+  if (input_defs.size() >= 2) {
+    const NodeArg* scale_tensor_arg = input_defs[1];  // the "scale" input
+    const ONNX_NAMESPACE::TensorProto* scale_initializer = nullptr;
+    if (qnn_model_wrapper.GetGraphViewer().GetInitializedTensor(scale_tensor_arg->Name(), scale_initializer)) {
+      LOGS(logger, INFO) << "Found scale scale initializer: " << scale_initializer->name();
+      //PrintTensorProto(scale_initializer);
+      if (scale_initializer->has_raw_data()) {
+        scale_scale = *reinterpret_cast<const float*>(scale_initializer->raw_data().data());
+      } else {
+        float data = scale_initializer->float_data(0);
+        LOGS(logger, INFO) << "Using float_data: " << data;
+        scale_scale = data;
       }
+      LOGS(logger, INFO) << "Scale value: " << scale_scale;
     }
-    if (input_defs.size() >= 3) {
-      const NodeArg* zero_tensor_arg = input_defs[2];  // the "zeros" input
-      const ONNX_NAMESPACE::TensorProto* zero_initializer = nullptr;
-      if (qnn_model_wrapper.GetGraphViewer().GetInitializedTensor(zero_tensor_arg->Name(), zero_initializer)) {
-        LOGS(logger, INFO) << "Found zeros initializer: " << zero_initializer->name();
-        PrintTensorProto(zero_initializer);
-        if (zero_initializer->has_raw_data()) {
-          scale_zero = *reinterpret_cast<const int32_t*>(zero_initializer->raw_data().data());
-        } else {
-          LOGS(logger, INFO) << "Using uint16_data:";
-          int32_t data = zero_initializer->int32_data(0);
-          LOGS(logger, INFO) << "Using uint16_data: " << data;
-          scale_zero = data;
-        }
-        LOGS(logger, INFO) << "Zero value: " << scale_zero;
+  }
+  if (input_defs.size() >= 3) {
+    const NodeArg* zero_tensor_arg = input_defs[2];  // the "zeros" input
+    const ONNX_NAMESPACE::TensorProto* zero_initializer = nullptr;
+    if (qnn_model_wrapper.GetGraphViewer().GetInitializedTensor(zero_tensor_arg->Name(), zero_initializer)) {
+      LOGS(logger, INFO) << "Found zeros initializer: " << zero_initializer->name();
+      //PrintTensorProto(zero_initializer);
+      if (zero_initializer->has_raw_data()) {
+        scale_zero = *reinterpret_cast<const int32_t*>(zero_initializer->raw_data().data());
+      } else {
+        LOGS(logger, INFO) << "Using uint16_data:";
+        int32_t data = zero_initializer->int32_data(0);
+        LOGS(logger, INFO) << "Using uint16_data: " << data;
+        scale_zero = data;
       }
+      LOGS(logger, INFO) << "Zero value: " << scale_zero;
     }
+  }
 
 
   if (!is_shuffled) {
-    ORT_RETURN_IF_ERROR(qnn_model_wrapper.MakeTensorWrapper(b_input_def, b_input_tensor));
-    ORT_RETURN_IF_ERROR(qnn_model_wrapper.MakeTensorWrapper(scale_input_def, scale_input_tensor));
-    ORT_RETURN_IF_ERROR(qnn_model_wrapper.MakeTensorWrapper(zeros_input_def, zeros_input_tensor));
+    // use the original tensors for B, scales and zeros.
+    if (target_out_split_size == 0)
+    {
+      ORT_RETURN_IF_ERROR(qnn_model_wrapper.MakeTensorWrapper(b_input_def, b_input_tensor));
+      ORT_RETURN_IF_ERROR(qnn_model_wrapper.MakeTensorWrapper(scale_input_def, scale_input_tensor));
+      ORT_RETURN_IF_ERROR(qnn_model_wrapper.MakeTensorWrapper(zeros_input_def, zeros_input_tensor));
 
-    ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(b_input_tensor)), "Failed to add input");
-    ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(scale_input_tensor)), "Failed to add input");
-    ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(zeros_input_tensor)), "Failed to add input");
+      ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(b_input_tensor)), "Failed to add input");
+      ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(scale_input_tensor)), "Failed to add input");
+      ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(zeros_input_tensor)), "Failed to add input");
+    }
+    else {
+      // if target_out_split_size is set, we need to split the B, scales and zeros tensors.
+      LOGS(logger, INFO) << "Splitting B, scales and zeros tensors into smaller chunks of size: " << target_out_split_size;
+      // assert that N_scalar.uint32Value is divisible by target_out_split_size
+      ORT_RETURN_IF_NOT(N_scalar.uint32Value % target_out_split_size == 0,
+                        "N must be divisible by target_out_split_size for MatMulNBits fusion.");
+      int split_number = N_scalar.uint32Value / target_out_split_size;
+      int in_size = K_scalar.uint32Value;
+      
+      for (int i = 0; i < split_number; ++i) {
+        LOGS(logger, INFO) << "Splitting B, scales and zeros tensors into chunk: " << i;
+
+        // process the B input.
+        std::string b_input_name = node_name + "B_" + std::to_string(i);
+        split_b_tensor_names.push_back(b_input_name);
+        // get the values of the B input tensor.
+        std::vector<uint8_t> b_values;
+        ORT_RETURN_IF_ERROR(GetInitializerUint8TensorValues(
+            qnn_model_wrapper.GetGraphViewer(),
+            b_input_def.node_arg.Name(),
+            b_values,
+            logger));
+        // make a vector of vectors of size target_out_split_size.
+        size_t b_chunk_size = (target_out_split_size * in_size) / 4; // each chunk has target_out_split_size*in_size elements, 4 are packed into a byte.
+        // print the b_chunk_size
+        LOGS(logger, INFO) << "B chunk size: " << b_chunk_size;
+        // split the b_values into chunks of size b_chunk_size.
+        std::vector<uint8_t> b_values_split(b_values.begin() + i * b_chunk_size, b_values.begin() + (i + 1) * b_chunk_size);
+        TensorInfo b_info = {};
+        // print the original tensor info
+        ORT_RETURN_IF_ERROR(qnn_model_wrapper.GetTensorInfo(b_input_def, b_info));
+        // get the number of dims
+        size_t num_dims = b_info.shape.size();
+        // print the shape
+        LOGS(logger, INFO) << "Original B input shape:";
+        for (size_t j = 0; j < num_dims; ++j) {
+          LOGS(logger, INFO) << "Dimension " << j << ": " << b_info.shape[j];
+        }
+        // update the shape to reflect the split size
+        b_info.shape[0] = target_out_split_size; // update the shape to reflect the split size
+        // print the shape 
+        LOGS(logger, INFO) << "B input shape: " << b_info.shape[0] << ", " << b_info.shape[1] << ", " << b_info.shape[2];
+        // print the first 10 values of the b_values_split
+        LOGS(logger, INFO) << "First 10 values of b_values_split: ";
+        for (size_t j = 0; j < std::min(b_values_split.size(), static_cast<size_t>(10)); ++j) {
+          LOGS(logger, INFO) << static_cast<int>(b_values_split[j]);
+        } 
+        QnnTensorWrapper b_input_tensor(
+            b_input_name,
+            QNN_TENSOR_TYPE_STATIC,  // It's an initializer
+            QNN_DATATYPE_UINT_8,
+            std::move(b_info.quant_param), // If unquantized, otherwise pass scale/offset
+            std::move(b_info.shape),
+            std::move(b_values_split)  // your replacement buffer
+        );
+        // LOGS(logger, INFO) << "Created B input tensor: " << b_input_name << " with shape: " << b_info.shape;
+        // add the tensor to the model wrapper.
+        ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(b_input_tensor)), "Failed to add input");
+
+        // process the scale input.
+        std::string scale_input_name = node_name + "Scale_" + std::to_string(i);
+        split_scales_tensor_names.push_back(scale_input_name);
+        std::vector<uint8_t> scale_values;
+        ORT_RETURN_IF_ERROR(GetInitializerUint8TensorValues(
+            qnn_model_wrapper.GetGraphViewer(),
+            scale_input_def.node_arg.Name(),
+            scale_values,
+            logger));
+        // make a vector of vectors of size target_out_split_size.
+        size_t scale_chunk_size = 2 * (target_out_split_size * in_size) / 64; // each chunk has target_out_split_size*in_size elements/ 64 elements, they are in a 16-bit format.
+        std::vector<uint8_t> scale_values_split(scale_values.begin() + i * scale_chunk_size, scale_values.begin() + (i + 1) * scale_chunk_size);
+        TensorInfo scale_info = {};
+        // print the original tensor info
+        ORT_RETURN_IF_ERROR(qnn_model_wrapper.GetTensorInfo(scale_input_def, scale_info));
+        // get the number of dims
+        [[maybe_unused]] size_t scale_num_dims = scale_info.shape.size();
+        // print the shape
+        scale_info.shape[0] = target_out_split_size; // update the shape to reflect the split size
+        QnnTensorWrapper scale_input_tensor(
+            scale_input_name,
+            QNN_TENSOR_TYPE_STATIC,  // It's an initializer
+            QNN_DATATYPE_UFIXED_POINT_16,
+            scale_info.quant_param.Copy(), // If unquantized, otherwise pass scale/offset
+            std::move(scale_info.shape),
+            std::move(scale_values_split)  // your replacement buffer
+        );
+        // LOGS(logger, INFO) << "Created Scale input tensor: " << scale_input_name << " with shape: " << scale_info.shape;
+        // add the tensor to the model wrapper
+        ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(scale_input_tensor)), "Failed to add input");
+
+        // process the zeros input.
+        std::string zeros_input_name = node_name + "Zeros_" + std::to_string(i);
+        split_zeros_tensor_names.push_back(zeros_input_name);
+        std::vector<uint8_t> zeros_values;
+        ORT_RETURN_IF_ERROR(GetInitializerUint8TensorValues(
+            qnn_model_wrapper.GetGraphViewer(),
+            zeros_input_def.node_arg.Name(),
+            zeros_values,
+            logger));
+        // make a vector of vectors of size target_out_split_size.
+        size_t zeros_chunk_size = (target_out_split_size * in_size) / (64*4); // each chunk has target_out_split_size*in_size/64 elements, 4 are packed into a byte.
+        std::vector<uint8_t> zeros_values_split(zeros_values.begin() + i * zeros_chunk_size, zeros_values.begin() + (i + 1) * zeros_chunk_size);
+        TensorInfo zeros_info = {};
+        // print the original tensor info
+        ORT_RETURN_IF_ERROR(qnn_model_wrapper.GetTensorInfo(zeros_input_def, zeros_info));
+        // get the number of dims
+        [[maybe_unused]] size_t zeros_num_dims = zeros_info.shape.size();
+        zeros_info.shape[0] = target_out_split_size; // update the shape to reflect the split size
+        QnnTensorWrapper zeros_input_tensor(
+            zeros_input_name,
+            QNN_TENSOR_TYPE_STATIC,  // It's an initializer
+            QNN_DATATYPE_UINT_8,
+            std::move(zeros_info.quant_param), // If unquantized, otherwise pass scale/offset
+            std::move(zeros_info.shape),
+            std::move(zeros_values_split)  // your replacement buffer
+        );
+        // LOGS(logger, INFO) << "Created Zeros input tensor: " << zeros_input_name << " with shape: " << zeros_info.shape;
+        // add the tensor to the model wrapper
+        ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(zeros_input_tensor)), "Failed to add input");
+
+      }
+    }
+
   }
 
   else if (is_shuffled) {
@@ -674,6 +828,108 @@ static Status CreateOrValidateOnQnn(QnnModelWrapper& qnn_model_wrapper,
       LOGS(logger, INFO) << "  " << i << ": " << weights_float[i];
     }
 
+    // now we make for loop for each of the split weights, scales and zeros tensors.
+    if (target_out_split_size != 0)
+    {
+      std::vector<std::string> matmul_out_names;
+      for (size_t i = 0; i < N_scalar.uint32Value / target_out_split_size; ++i) {
+        // create the weights tensor name
+        std::string weights_name = node_name + "_weights_" + std::to_string(i);
+        std::vector<uint32_t> weights_shape = {target_out_split_size, K_scalar.uint32Value};
+        QnnTensorWrapper weights_tensor(weights_name,
+                                        QNN_TENSOR_TYPE_NATIVE,
+                                        QNN_DATATYPE_UFIXED_POINT_8,
+                                        QnnQuantParamsWrapper(scale, offset),
+                                        std::move(weights_shape));
+        std::string node_string = node_name  + std::to_string(i);
+        Qnn_Scalar_t split_scalar;
+        split_scalar.dataType = QNN_DATATYPE_INT_32;
+        split_scalar.uint32Value = target_out_split_size;
+        QnnParamWrapper bits_wrapper_split(input_dq_unit.Index(), node_string, "bits", bits_scalar);
+        QnnParamWrapper block_size_wrapper_split(input_dq_unit.Index(), node_string, "block_size", block_size_scalar);
+        QnnParamWrapper K_wrapper_split(input_dq_unit.Index(), node_string, "K", K_scalar);
+        QnnParamWrapper N_wrapper_split(input_dq_unit.Index(), node_string, "N", split_scalar);
+        std::vector<std::string> param_tensor_names_split;
+        param_tensor_names_split.push_back(bits_wrapper_split.GetParamTensorName());
+        param_tensor_names_split.push_back(block_size_wrapper_split.GetParamTensorName());
+        param_tensor_names_split.push_back(K_wrapper_split.GetParamTensorName());
+        param_tensor_names_split.push_back(N_wrapper_split.GetParamTensorName());
+        ORT_RETURN_IF_NOT(qnn_model_wrapper.AddParamWrapper(std::move(bits_wrapper_split)), "Failed to add param");
+        ORT_RETURN_IF_NOT(qnn_model_wrapper.AddParamWrapper(std::move(block_size_wrapper_split)), "Failed to add param");
+        ORT_RETURN_IF_NOT(qnn_model_wrapper.AddParamWrapper(std::move(K_wrapper_split)), "Failed to add param");
+        ORT_RETURN_IF_NOT(qnn_model_wrapper.AddParamWrapper(std::move(N_wrapper_split)), "Failed to add param");
+
+
+        ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(weights_tensor)), "Failed to add tensor.");
+        std::string unpack_name = node_name + "_unpack_" + std::to_string(i);
+        ORT_RETURN_IF_NOT(qnn_model_wrapper.CreateQnnNode(unpack_name,
+                                                  "UnpackWeightsNBits",
+                                                  "UnpackWeightsNBits",
+                                                  {split_b_tensor_names[i], split_scales_tensor_names[i], split_zeros_tensor_names[i]},
+                                                  {weights_name},
+                                                  std::move(param_tensor_names_split),
+                                                  validate),
+                  "Failed to add fused MatMulNBits fused node.");
+
+        std::string matmul_out_name = node_name + "_matmul_out_" + std::to_string(i);
+        matmul_out_names.push_back(matmul_out_name);
+        std::vector<uint32_t> matmul_out_shape = {1, 1, target_out_split_size};
+        // get the tensor info for the final output tensor.
+        TensorInfo output_info = {};
+        ORT_RETURN_IF_ERROR(qnn_model_wrapper.GetTensorInfo(output_def, output_info));
+        QnnTensorWrapper matmul_out_tensor(matmul_out_name,
+                                           QNN_TENSOR_TYPE_NATIVE,
+                                           output_info.qnn_data_type,
+                                           output_info.quant_param.Copy(), // If unquantized, otherwise pass scale/offset
+                                           std::move(matmul_out_shape));
+        ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(matmul_out_tensor)), "Failed to add output tensor.");
+
+        std::vector<std::string> param_tensor_names_mul;
+
+        Qnn_Scalar_t t0 = QNN_SCALAR_INIT; 
+        t0.dataType    = QNN_DATATYPE_BOOL_8; 
+        t0.bool8Value  = 0;
+        QnnParamWrapper p0(input_dq_unit.Index(), input_dq_unit.Name(), QNN_OP_MAT_MUL_PARAM_TRANSPOSE_IN0, t0);
+        param_tensor_names_mul.push_back(p0.GetParamTensorName());
+        qnn_model_wrapper.AddParamWrapper(std::move(p0));
+
+        Qnn_Scalar_t t1 = QNN_SCALAR_INIT; 
+        t1.dataType    = QNN_DATATYPE_BOOL_8; 
+        t1.bool8Value  = 1; // transpose the wieght input.
+        QnnParamWrapper p1(input_dq_unit.Index(), input_dq_unit.Name(), QNN_OP_MAT_MUL_PARAM_TRANSPOSE_IN1, t1);
+        param_tensor_names_mul.push_back(p1.GetParamTensorName());
+        qnn_model_wrapper.AddParamWrapper(std::move(p1));
+        std::string matmul_op_name = node_name + "_mat_mul_" + std::to_string(i);
+        ORT_RETURN_IF_NOT(qnn_model_wrapper.CreateQnnNode(matmul_op_name, QNN_OP_PACKAGE_NAME_QTI_AISW,
+                                                          QNN_OP_MAT_MUL,
+                                                          {a_input_def.node_arg.Name(), weights_name}, {matmul_out_name},
+                                                          std::move(param_tensor_names_mul), validate),
+                          "Failed to add fused Matmul node.");
+
+      }
+
+      // now we need to add the output node, which is a concat of all the matmul outputs.
+      std::vector<std::string> param_tensor_names_concat;
+      int output_ndim = output_def.node_arg.Shape()->dim_size();
+      int32_t default_axis = output_ndim-1;
+      Qnn_Scalar_t axis_qnn_scalar = QNN_SCALAR_INIT;
+      axis_qnn_scalar.dataType = QNN_DATATYPE_INT_32;
+      axis_qnn_scalar.int32Value = default_axis;
+      QnnParamWrapper axis_param(input_dq_unit.Index(), input_dq_unit.Name(), QNN_OP_SOFTMAX_PARAM_AXIS, axis_qnn_scalar);
+      param_tensor_names_concat.push_back(axis_param.GetParamTensorName());
+      qnn_model_wrapper.AddParamWrapper(std::move(axis_param));
+
+      ORT_RETURN_IF_NOT(qnn_model_wrapper.CreateQnnNode(node_name + "_concat",
+                                                        QNN_OP_PACKAGE_NAME_QTI_AISW,
+                                                        QNN_OP_CONCAT,
+                                                        std::move(matmul_out_names),
+                                                        {output_def.node_arg.Name()},
+                                                        std::move(param_tensor_names_concat),
+                                                        validate),
+                        "Failed to add fused Concat node.");
+    }
+    else{
+      // unsplit method.
     std::string weights_name = node_name + "_weights_raw";
 
     // this uses the unpack operator to unpack the weights at runtime.
@@ -687,6 +943,7 @@ static Status CreateOrValidateOnQnn(QnnModelWrapper& qnn_model_wrapper,
                                     std::move(weights_shape));
 
     ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(weights_tensor)), "Failed to add tensor.");
+
 
     ORT_RETURN_IF_NOT(qnn_model_wrapper.CreateQnnNode(node_name,
                                                       "UnpackWeightsNBits",
@@ -719,6 +976,7 @@ static Status CreateOrValidateOnQnn(QnnModelWrapper& qnn_model_wrapper,
                                                       {a_input_def.node_arg.Name(), weights_name}, {output_def.node_arg.Name()},
                                                       std::move(param_tensor_names_mul), validate),
                       "Failed to add fused Matmul node.");
+    }
   }
 
   return Status::OK();
