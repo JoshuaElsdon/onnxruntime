@@ -441,7 +441,7 @@ static Status CreateOrValidateOnQnn(QnnModelWrapper& qnn_model_wrapper,
 
     TensorInfo b_info = {};
     ORT_RETURN_IF_ERROR(qnn_model_wrapper.GetTensorInfo(b_input_def, b_info));
-
+    b_info.shape = {1, 2, K_scalar.uint32Value / 8, N_scalar.uint32Value }; // reshape to 1, 2, N, K/block_size
     QnnTensorWrapper b_tensor_wrapper(
         b_input_name,
         QNN_TENSOR_TYPE_STATIC,  // It's an initializer
@@ -468,6 +468,7 @@ static Status CreateOrValidateOnQnn(QnnModelWrapper& qnn_model_wrapper,
 
     TensorInfo scales_info = {};
     ORT_RETURN_IF_ERROR(qnn_model_wrapper.GetTensorInfo(scale_input_def, scales_info));
+    scales_info.shape = {1, 1, N_scalar.uint32Value, K_scalar.uint32Value / (block_size_scalar.uint32Value)}; // reshape to 1, 2, N, K/block_size
     QnnTensorWrapper scale_tensor_wrapper(
         scale_input_name,
         QNN_TENSOR_TYPE_STATIC,  // It's an initializer
@@ -494,6 +495,7 @@ static Status CreateOrValidateOnQnn(QnnModelWrapper& qnn_model_wrapper,
 
     TensorInfo zero_info = {};
     ORT_RETURN_IF_ERROR(qnn_model_wrapper.GetTensorInfo(zeros_input_def, zero_info));
+    zero_info.shape = {1, 2,N_scalar.uint32Value,  K_scalar.uint32Value / (block_size_scalar.uint32Value*8)}; // reshape to 1, 2, K/block_size, N
     QnnTensorWrapper zeros_tensor_wrapper(
         zeros_input_name,
         QNN_TENSOR_TYPE_STATIC,  // It's an initializer
@@ -680,7 +682,7 @@ static Status CreateOrValidateOnQnn(QnnModelWrapper& qnn_model_wrapper,
     
     std::vector<uint32_t> weights_shape = {N_scalar.uint32Value, K_scalar.uint32Value};
 
-    bool per_channel = true;
+    bool per_channel = false;
 
     QnnQuantParamsWrapper weights_quant_params;
     if (per_channel) {
