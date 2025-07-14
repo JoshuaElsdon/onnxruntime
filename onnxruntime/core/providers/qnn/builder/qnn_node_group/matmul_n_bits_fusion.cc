@@ -680,10 +680,26 @@ static Status CreateOrValidateOnQnn(QnnModelWrapper& qnn_model_wrapper,
     
     std::vector<uint32_t> weights_shape = {N_scalar.uint32Value, K_scalar.uint32Value};
 
+    bool per_channel = true;
+
+    QnnQuantParamsWrapper weights_quant_params;
+    if (per_channel) {
+      // For per-channel quantization, we need to create a scale and offset for each channel.
+      std::vector<float> scales(N_scalar.uint32Value, scale);
+      std::vector<int32_t> offsets(N_scalar.uint32Value, -128);
+      weights_quant_params = QnnQuantParamsWrapper(gsl::span<const float>(scales), gsl::span<const int32_t>(offsets), 1, false);
+    } else {
+      // For per-tensor quantization, we use a single scale and offset.
+      weights_quant_params = QnnQuantParamsWrapper(scale, offset);
+    }
+
+    // for testing make a fake set of weights in KxN format.
+
+    // std::vector<uint8_t> weights_data(N_scalar.uint32Value * K_scalar.uint32Value, 0);
     QnnTensorWrapper weights_tensor(weights_name,
-                                    QNN_TENSOR_TYPE_NATIVE,
+                                    QNN_TENSOR_TYPE_NATIVE,  // QNN_TENSOR_TYPE_NATIVE is regular, QNN_TENSOR_TYPE_STATIC is for initializers
                                     QNN_DATATYPE_UFIXED_POINT_8,
-                                    QnnQuantParamsWrapper(scale, offset),
+                                    std::move(weights_quant_params),
                                     std::move(weights_shape));
 
     ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(weights_tensor)), "Failed to add tensor.");
