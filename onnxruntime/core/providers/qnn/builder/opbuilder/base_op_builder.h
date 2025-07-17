@@ -215,6 +215,19 @@ class BaseOpBuilder : public IOpBuilder {
     return it->second;
   }
 
+  static const std::string& GetQnnOpPackageName(const std::string& onnx_op_type) {
+    static const std::unordered_map<std::string, std::string> qnn_op_type_to_op_package_name = {
+        {"MatMulNBits", "MatMulNBits"}};
+
+    static const std::string default_qnn_package_name(QNN_OP_PACKAGE_NAME_QTI_AISW);
+    auto it = qnn_op_type_to_op_package_name.find(onnx_op_type);
+    if (it != qnn_op_type_to_op_package_name.end()) {
+      return it->second;
+    } else {
+      return default_qnn_package_name;
+    }
+  }
+
   // NCHW shape to channel last
   template <typename T>
   Status NchwShapeToNhwc(gsl::span<const T> nchw_shape, gsl::span<T> nhwc_shape) const {

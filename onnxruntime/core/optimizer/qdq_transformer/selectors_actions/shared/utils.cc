@@ -314,20 +314,8 @@ std::vector<NodeGroup> SelectorManager::GetQDQSelections(const GraphViewer& grap
       continue;
     }
 
-    // print the op_type_to_selectors_map_
-    if(node->OpType() == "MatMulNBits") {
-      LOGS(logger, VERBOSE) << "MatMulNBits OpType found in the graph: " << node->Name();
-      for (const auto& op_rule : op_type_to_selectors_map_) {
-        LOGS(logger, VERBOSE) << "OpType: " << op_rule.first;
-      }
-    }
-
-
     auto op_rule = op_type_to_selectors_map_.find(node->OpType());
     if (op_rule == op_type_to_selectors_map_.cend()) {
-      if(node->OpType() == "MatMulNBits") {
-        LOGS(logger, VERBOSE) << "MatMulNBits OpType not found in the op_type_to_selectors_map_";
-      }
       continue;
     }
 
@@ -342,18 +330,8 @@ std::vector<NodeGroup> SelectorManager::GetQDQSelections(const GraphViewer& grap
       }
     }
 
-    if(node->OpType() == "MatMulNBits") {
-      LOGS(logger, VERBOSE) << "MatMulNBits OpType found in the graph: " << node->Name()
-                            << ", SinceVersion: " << node->SinceVersion();
-    }
-
     const auto qdq_node_group_selection = op_versions_and_selector.selector->GetQDQSelection(graph_viewer, *node);
     if (qdq_node_group_selection.has_value()) {
-      if(node->OpType() == "MatMulNBits") {
-        LOGS(logger, VERBOSE) << "MatMulNBits OpType found in the graph: " << node->Name()
-                              << ", SinceVersion: " << node->SinceVersion()
-                              << ", QDQ NodeGroup Selection found";
-      }
       const auto& qdq_group = *qdq_node_group_selection;
       qdq_selections.push_back(qdq_group);
     }

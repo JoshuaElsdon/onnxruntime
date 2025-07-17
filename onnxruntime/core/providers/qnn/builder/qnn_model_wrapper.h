@@ -274,6 +274,65 @@ class QnnModelWrapper {
                                /*out*/ bool& is_per_channel,
                                /*out*/ int64_t& axis) const;
 
+struct ParsedHints {
+  bool shuffle = false;  // true ⇒ use fast shuffle kernel
+  bool scratch = false;  // true ⇒ use scratch memory for fast shuffle kernel
+  bool split = false;
+  uint32_t split_size = 0;   // 0 ⇒ none
+  uint32_t split_count = 1;  // 1 ⇒ no split, 2 ⇒ split into two tensors, etc.
+};
+
+ParsedHints parse_hints( const int output_dimension, const logging::Logger& logger) {
+  ParsedHints hints;
+  const ModelSettings& model_settings = GetModelSettings();
+  const std::string& model_hints = model_settings.model_hints;
+
+  LOGS(logger, INFO) << "Model hints: " << model_hints;
+
+  if (model_hints.find("shuffle") != std::string::npos) {
+    hints.shuffle = true;
+    LOGS(logger, INFO) << "Model hint 'shuffle' found.";
+  }
+  if (model_hints.find("scratch") != std::string::npos) {
+    hints.scratch = true;
+    LOGS(logger, INFO) << "Model hint 'scratch' found.";
+  }
+  if (model_hints.find("split") != std::string::npos) {
+    hints.split = true;
+    size_t split_pos = model_hints.find("split");
+    if (split_pos != std::string::npos) {
+      size_t next_underscore = model_hints.find('_', split_pos + 5);
+      if (next_underscore != std::string::npos) {
+        std::string split_size_str = model_hints.substr(split_pos + 5, next_underscore - (split_pos + 5));
+        try {
+          hints.split_size = std::stoul(split_size_str);
+          LOGS(logger, INFO) << "Target out split size set to: " << hints.split_size;
+        } catch (const std::invalid_argument& e) {
+          LOGS(logger, ERROR) << "Invalid split size: " << split_size_str;
+        }
+      } else {
+        LOGS(logger, ERROR) << "No underscore found after 'split'";
+      }
+    }
+  }
+
+  if (hints.split_size > 0) {
+    // Calculate the split count based on the output dimension.
+    if (output_dimension % hints.split_size != 0) {
+      LOGS(logger, ERROR) << "Output dimension is not divisible by split size.";
+      throw std::invalid_argument("Output dimension is not divisible by split size.");
+    }
+    hints.split_count = output_dimension / hints.split_size;
+    LOGS(logger, INFO) << "Split count set to: " << hints.split_count;
+  } else {
+    // set split size tot the N dimension.
+    hints.split_size = output_dimension;
+    LOGS(logger, INFO) << "Split size set to output dimension: " << hints.split_size;
+  }
+
+  return hints;
+}
+
  private:
   bool CreateQnnInputOutputTensors(const std::string& qnn_node_name,
                                    const std::vector<std::string>& names,
@@ -301,6 +360,8 @@ class QnnModelWrapper {
     }
     return pos->second;
   }
+
+
 
   void GetGraphInputOutputTensorWrapper(const std::vector<std::string>& names,
                                         std::vector<QnnTensorWrapper>& wrappers_list);
@@ -332,7 +393,12 @@ class QnnModelWrapper {
   QnnBackendType qnn_backend_type_ = QnnBackendType::CPU;
   ModelSettings model_settings_ = {};
   utils::QnnJSONGraph json_qnn_graph_;
+
+  
 };  // QnnModelWrapper
+
+
+
 
 }  // namespace qnn
 }  // namespace onnxruntime
