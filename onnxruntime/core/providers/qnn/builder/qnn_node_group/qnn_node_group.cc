@@ -156,6 +156,8 @@ static Status GetQnnNodeGroupsImpl(/*out*/ std::vector<std::unique_ptr<IQnnNodeG
                                                                     logger);
 
     if (fused_node_group) {
+      LOGS(logger, INFO) << "Fused NodeUnit: " << node_unit->Name()
+                        << " into IQnnNodeGroup of type: " << fused_node_group->Type();
       const size_t index = qnn_node_groups.size();
       fused_qnn_node_group_indices[fused_node_group.get()] = index;
 

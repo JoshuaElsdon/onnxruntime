@@ -756,10 +756,74 @@ QNNExecutionProvider::GetCapability(const onnxruntime::GraphViewer& graph_viewer
 
   std::tie(node_unit_holder, node_unit_map) = GetQDQNodeUnits(graph_viewer, logger);
 
+  ///// josh' hack
+
+  // print out the node_unit_map
+  LOGS(logger, VERBOSE) << "Node Unit Map:";
+  for (const auto& pair : node_unit_map) {
+    const Node* node = pair.first;
+    const NodeUnit* node_unit = pair.second;
+    LOGS(logger, VERBOSE) << "Node Unit: " << node_unit->Name() << ", OpType: " << node_unit->OpType()
+                          << ", Node Name: " << node->Name()
+                          << ", Node Index: " << node->Index();
+  }
+
+  std::unordered_set<std::string> initializer_input_lookup;
+  auto graph_initializers = graph_viewer.GetAllInitializedTensors();
+  for (auto graph_ini : graph_initializers) {
+    initializer_input_lookup.emplace(graph_ini.first);
+  }
+
+  // Util function that initializes a table that maps a graph input or output name to its index.
+  auto init_input_output_index_map = [](std::unordered_map<std::string, size_t>& index_map,
+                                        const std::vector<const NodeArg*>& node_args) {
+    const size_t num_args = node_args.size();
+    for (size_t i = 0; i < num_args; i++) {
+      index_map.emplace(node_args[i]->Name(), i);
+    }
+  };
+
+  std::unordered_map<std::string, size_t> model_input_index_map;
+  init_input_output_index_map(model_input_index_map, graph_viewer.GetInputs());  // GetInputs excludes initializers.
+
+  std::unordered_map<std::string, size_t> model_output_index_map;
+  init_input_output_index_map(model_output_index_map, graph_viewer.GetOutputs());
+
+  auto qnn_model_wrapper = qnn::QnnModelWrapper(graph_viewer, logger,
+                                                qnn_backend_manager_->GetQnnInterface(),
+                                                qnn_backend_manager_->GetQnnBackendHandle(),
+                                                model_input_index_map,
+                                                model_output_index_map,
+                                                initializer_input_lookup,
+                                                qnn_backend_manager_->GetQnnBackendType(),
+                                                model_settings_);
+
+  std::vector<std::unique_ptr<qnn::IQnnNodeGroup>> qnn_node_groups;
+  std::vector<std::unique_ptr<NodeUnit>> node_unit_holder_groups;
+  qnn_node_groups.reserve(node_unit_holder_groups.size());
+
+  if (Status status = qnn::GetQnnNodeGroups(qnn_node_groups, qnn_model_wrapper,
+                                            node_unit_map, node_unit_holder_groups.size(), logger);
+      !status.IsOK()) {
+    LOGS(logger, ERROR) << status.ErrorMessage();
+    return {};
+  }
+
+  // print out the node groups
+  LOGS(logger, VERBOSE) << "QNN Node Groups:";
+  for (const auto& qnn_node_group : qnn_node_groups) {
+    LOGS(logger, VERBOSE) << ", Type: " << qnn_node_group->Type()
+                          << ", Target Node Unit OpType: " << qnn_node_group->GetTargetNodeUnit()->OpType()
+                          << ", Number of Nodes: " << qnn_node_group->GetNodeUnits().size();
+  }
+
+  //// end josh' hack
+
   // remove is_qnn_ctx_model related code
   const auto supported_nodes = GetSupportedNodes(graph_viewer, node_unit_map,
                                                  node_unit_holder.size(), logger);
 
+  // 
   // Helper function that returns a string that lists all unsupported nodes.
   // Ex: { name: mul_123, type: Mul }, {}, ...
   auto get_unsupported_node_names = [&node_unit_holder, &supported_nodes]() -> std::string {

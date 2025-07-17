@@ -44,8 +44,11 @@ std::unique_ptr<IQnnNodeGroup> MatMulNBitsQDQFusion::TryFusion(
     LOGS(logger, INFO) << "MatMulNBitsQDQFusion::TryFusion() input_dq_unit is a standalone DequantizeLinear node.";
   }
 
-  // Dequantize must have a single MatMulNBits child (1 output edge) and must not produce a graph output.
+  
   const GraphViewer& graph_viewer = qnn_model_wrapper.GetGraphViewer();
+
+
+  // Dequantize must have a single MatMulNBits child (1 output edge) and must not produce a graph output.
   const std::array<std::string_view, 1> child_types = {"MatMulNBits"};
   const NodeUnit* matmul_n_bits_node_unit = GetOnlyChildOfType(graph_viewer, input_dq_unit, child_types,
                                                                node_to_node_unit, node_unit_to_qnn_node_group);

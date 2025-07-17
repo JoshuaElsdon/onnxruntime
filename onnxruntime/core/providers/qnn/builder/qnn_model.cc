@@ -128,6 +128,7 @@ Status QnnModel::ComposeGraph(const GraphViewer& graph_viewer,
 
   ORT_RETURN_IF_ERROR(qnn::GetQnnNodeGroups(qnn_node_groups, qnn_model_wrapper, node_unit_map,
                                             node_unit_holder.size(), logger));
+  LOGS(logger, VERBOSE) << "GetQnnNodeGroups completed. Number of groups: " << qnn_node_groups.size();
 
   for (const std::unique_ptr<qnn::IQnnNodeGroup>& qnn_node_group : qnn_node_groups) {
     Status status = qnn_node_group->AddToModelBuilder(qnn_model_wrapper, logger);
