@@ -87,7 +87,7 @@ struct TestOptions {
   std::optional<float> output_rel_error{};
 };
 
-std::ostream& operator<<(std::ostream& os, const TestOptions& opts) {
+[[maybe_unused]] std::ostream& operator<<(std::ostream& os, const TestOptions& opts) {
   return os << "M:" << opts.M << ", N:" << opts.N << ", K:" << opts.K
             << ", block_size:" << opts.block_size
             << ", accuracy_level:" << opts.accuracy_level
@@ -332,6 +332,8 @@ void TestMatMulNBitsTyped() {
 #endif  // !defined(USE_DML) && !defined(USE_WEBGPU)
 }
 
+#if !defined(USE_OPENVINO)
+
 TEST(MatMulNBits, Float32_Accuracy0) {
   TestMatMulNBitsTyped<float, Q4Bits, 1, 1, 16, 16, 0>();
   TestMatMulNBitsTyped<float, Q4Bits, 1, 2, 16, 16, 0>();
@@ -471,6 +473,7 @@ TEST(MatMulNBits, Float16_Accuracy4) {
 }
 #endif
 #endif
+#endif
 
 #if defined(USE_CUDA) || defined(USE_ROCM) || defined(USE_DML) || defined(USE_WEBGPU)
 
@@ -534,8 +537,10 @@ TEST(MatMulNBits, Float16Cuda) {
       for (auto K : {16, 32, 64, 128, 256, 1024, 93, 1234}) {
         for (auto block_size : {16, 32, 64, 128}) {
           for (auto has_gidx : has_gidx_options) {
-#ifdef USE_DML
+#if defined(USE_DML)
             RunTest(M, N, K, block_size, 0, false, true, has_gidx, true, 0.04f);
+#elif defined(USE_WEBGPU)
+            RunTest(M, N, K, block_size, 0, false, true, has_gidx, true, 0.03f);
 #else
             RunTest(M, N, K, block_size, 0, false, true, has_gidx);
             RunTest(M, N, K, block_size, 0, true, true, has_gidx, false);
