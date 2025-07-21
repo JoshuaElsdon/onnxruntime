@@ -148,7 +148,7 @@ class MlasSQNBitGemmTest : public MlasTestBase {
           } else if constexpr (BlkBitWidth == 2) {
             assert(QuantBZeroPoint && "zero point input is needed for BlkBitWidth == 2");
           } else {
-              static_assert(false, "only implemented for 2- and 4-bit quantized B");
+              static_assert(BlkBitWidth == 2 || BlkBitWidth == 4, "only implemented for 2- and 4-bit quantized B");
           }
 
           int pack_size = 8 / BlkBitWidth;

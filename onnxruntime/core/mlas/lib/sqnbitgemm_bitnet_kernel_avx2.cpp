@@ -26,6 +26,7 @@ Q2BitGemmPackQuantBDataSize(
     size_t /*N*/,
     size_t /*K*/,
     size_t /*BlkLen*/,
+    bool /*HasZeroPoint*/,
     MLAS_QNBIT_GEMM_COMPUTE_TYPE /*ComputeType*/
 )
 {
@@ -40,7 +41,7 @@ void SQ2BitGemmPackQuantBData(
   const std::byte* /*QuantBDataBegin*/,
   std::byte* /*PackedQuantBDataBegin*/,
   MLAS_THREADPOOL* /*ThreadPool*/
-) 
+)
 {
 }
 
@@ -50,6 +51,7 @@ Q2BitGemmPerGemmWorkspaceSize(
     size_t /*N*/,
     size_t /*K*/,
     size_t /*BlkLen*/,
+    bool /*HasZeroPoint*/,
     MLAS_QNBIT_GEMM_COMPUTE_TYPE /*ComputeType*/
 )
 {
