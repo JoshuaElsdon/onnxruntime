@@ -123,6 +123,7 @@ class MlasBlockwiseQdqTest : public MlasTestBase {
             true, rows, columns, block_size, threadpool_ptr);
 
         ASSERT_EQ(symmetric, signed_quant) << "symmetric quantization should be signed";
+        ASSERT_EQ(symmetric, signed_quant) << "symmetric quantization should be signed";
 
         if (symmetric) {
           MlasQDQTransposeBlockwiseQuantized<T, qbits, true>(
