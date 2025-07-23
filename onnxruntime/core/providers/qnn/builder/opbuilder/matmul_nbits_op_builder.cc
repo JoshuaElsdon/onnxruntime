@@ -568,18 +568,12 @@ Status MatMulNBitsOpBuilder::ProcessAttributesAndOutputs([[maybe_unused]]QnnMode
 
       if (hints.scratch) {
         // scratch buffer sizes, maybe move inside a class
-        uint32_t SCALES_COUNT = hints.split_size * kernel_params.K.uint32Value / kernel_params.block.uint32Value;
         int32_t GROUP_SIZE = 4;
         int32_t LUT_WIDTH = 2 << (GROUP_SIZE - 1);
 
-        size_t x_data_fp_size = kernel_params.K.uint32Value * sizeof(uint16_t);  // same size as Float16
-        size_t scales_data_fp_size = SCALES_COUNT * sizeof(uint16_t);
-        size_t result_size = hints.split_size * sizeof(float);
-        size_t bit_sum_size = kernel_params.bits.uint32Value * hints.split_size * sizeof(uint32_t);
         size_t lut_size = (kernel_params.K.uint32Value / GROUP_SIZE) * LUT_WIDTH * sizeof(uint16_t);
-        size_t offset_size = (kernel_params.K.uint32Value / kernel_params.block.uint32Value) * sizeof(uint16_t);
 
-        size_t scratch_size = x_data_fp_size + scales_data_fp_size + result_size + bit_sum_size + lut_size + offset_size;
+        size_t scratch_size = lut_size;
 
         // scratch shape
         std::vector<uint32_t> scratch_shape = {1, 1, 1, (uint32_t)scratch_size};  // This is a placeholder, actual shape will be determined by the kernel.
