@@ -607,6 +607,7 @@ SQ2BitGemm_CompInt8(
     const size_t /*RangeCountN*/
 )
 {
+  // TODO: implement this to call 2bit t-mac kernel
 }
 
 void
