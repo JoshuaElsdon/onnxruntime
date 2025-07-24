@@ -52,6 +52,7 @@ bool NodeGroupSelector::CheckQDQNodes(const GraphViewer& graph_viewer, const Nod
                                       const Node* redundant_clip_node, const std::vector<const Node*>& dq_nodes,
                                       const std::vector<const Node*>& q_nodes, int num_dq_inputs,
                                       bool is_empty_q_nodes_allowed) const {
+
   if (num_dq_inputs == -1) {
     num_dq_inputs = NumActualValues(node, true);
   }
@@ -246,7 +247,7 @@ bool UnaryNodeGroupSelector::Check(const GraphViewer& graph_viewer, const Node& 
 
 bool BinaryNodeGroupSelector::Check(const GraphViewer& graph_viewer, const Node& node, const Node* redundant_clip_node,
                                     const std::vector<const Node*>& dq_nodes,
-                                    const std::vector<const Node*>& q_nodes) const {
+                                    const std::vector<const Node*>& q_nodes) const {                         
   if (!CheckQDQNodes(graph_viewer, node, redundant_clip_node, dq_nodes, q_nodes)) {
     return false;
   }
@@ -578,6 +579,24 @@ bool GemmNodeGroupSelector::Check(const GraphViewer& graph_viewer, const Node& n
 void GemmSelector::UpdateBuilder(NodesToOptimizeIndicesBuilder& builder) const {
   builder.input_nodes.resize(3, NodesToOptimizeIndices::kEmptyNodeIndex);
 }
+
+bool MatMulNBitsNodeGroupSelector::Check(const GraphViewer& graph_viewer, const Node& node, const Node* redundant_clip_node,
+                                   const std::vector<const Node*>& dq_nodes,
+                                   const std::vector<const Node*>& q_nodes) const {
+                                    return true;
+                                    std::cout << "MatMulNBitsNodeGroupSelector::Check is not implemented yet." << std::endl;
+  // we should check that the first and third inputs hav DQ nodes, and that the output has a Q node
+  if (!CheckQDQNodes(graph_viewer, node, redundant_clip_node, dq_nodes, q_nodes, 2)) {
+    return false;
+  }
+  // MatMulNBits has 2 DQ inputs and 1 Q output
+  if (dq_nodes.size() != 2 || q_nodes.size() != 1) {
+    return false;
+  }
+
+  return true;
+}
+
 
 bool WhereNodeGroupSelector::Check(const GraphViewer& graph_viewer, const Node& node, const Node* redundant_clip_node,
                                    const std::vector<const Node*>& dq_nodes,

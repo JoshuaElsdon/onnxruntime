@@ -16,7 +16,6 @@
 #include "core/providers/qnn/builder/op_builder_factory.h"
 #include "core/providers/qnn/builder/qnn_node_group/dq_q_fusion.h"
 #include "core/providers/qnn/builder/qnn_node_group/hardsigmoid_mul_fusion.h"
-#include "core/providers/qnn/builder/qnn_node_group/matmul_n_bits_fusion.h"
 
 namespace onnxruntime {
 namespace qnn {
@@ -89,7 +88,6 @@ static std::unique_ptr<IQnnNodeGroup> TryQnnFusions(
   // Maps a starting operator type to the fusion function.
   static const std::vector<FusionFunc> fusion_funcs = {
     DQQFusion::TryFusion,
-    MatMulNBitsQDQFusion::TryFusion,
     HardSigmoidMulFusion::TryFusion,
     // add more as needed
 };
@@ -156,6 +154,8 @@ static Status GetQnnNodeGroupsImpl(/*out*/ std::vector<std::unique_ptr<IQnnNodeG
                                                                     logger);
 
     if (fused_node_group) {
+      LOGS(logger, INFO) << "Fused NodeUnit: " << node_unit->Name()
+                        << " into IQnnNodeGroup of type: " << fused_node_group->Type();
       const size_t index = qnn_node_groups.size();
       fused_qnn_node_group_indices[fused_node_group.get()] = index;
 
