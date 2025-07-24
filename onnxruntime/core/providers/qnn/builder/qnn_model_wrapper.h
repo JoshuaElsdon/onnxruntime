@@ -318,12 +318,22 @@ ParsedHints parse_hints( const int output_dimension, const logging::Logger& logg
 
   if (hints.split_size > 0) {
     // Calculate the split count based on the output dimension.
-    if (output_dimension % hints.split_size != 0) {
-      LOGS(logger, ERROR) << "Output dimension is not divisible by split size.";
-      throw std::invalid_argument("Output dimension is not divisible by split size.");
+    if ((uint32_t)output_dimension <= hints.split_size) {
+      hints.split_count = 1;  // No split needed
+      hints.split_size = output_dimension;  // Set split size to output dimension
+      LOGS(logger, INFO) << "Output dimension is less than or equal to split size, no split needed.";
     }
-    hints.split_count = output_dimension / hints.split_size;
-    LOGS(logger, INFO) << "Split count set to: " << hints.split_count;
+    else if (output_dimension % hints.split_size != 0) {
+      hints.split_count = 1;  // No split needed
+      hints.split_size = output_dimension;  // Set split size to output dimension
+      LOGS(logger, INFO) << "Output dimension is not divisible by split size, leaving unmodified.";
+    }
+    else
+    {
+      hints.split_count = output_dimension / hints.split_size;
+      LOGS(logger, INFO) << "Split count set to: " << hints.split_count;
+    }
+    
   } else {
     // set split size tot the N dimension.
     hints.split_size = output_dimension;
