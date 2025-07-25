@@ -195,13 +195,13 @@ class HQQWeightOnlyQuantConfig(WeightOnlyQuantConfig):
 class DefaultWeightOnlyQuantConfig(WeightOnlyQuantConfig):
     def __init__(
         self,
+        bits: int = 4,
         block_size: int = 128,
         is_symmetric: bool = False,
         accuracy_level: int | None = None,
         quant_format=QuantFormat.QOperator,
         op_types_to_quantize: tuple[str, ...] | None = None,
         quant_axes: tuple[tuple[str, int], ...] | None = None,
-        bits: int = 4,
     ):
         """
         This is a class for weight only affine quantization configuration.
@@ -831,7 +831,7 @@ class DefaultWeightOnlyQuantizer:
             rows, cols = b_ndarray.shape
             kwargs["K"] = rows
             kwargs["N"] = cols
-            kwargs["bits"] = bits
+            kwargs["bits"] = self.config.bits
             kwargs["block_size"] = self.config.block_size
             if self.config.accuracy_level is not None:
                 kwargs["accuracy_level"] = self.config.accuracy_level
@@ -1128,6 +1128,7 @@ class MatMulNBitsQuantizer:
     def __init__(
         self,
         model: ModelProto | str,
+        bits: int,
         block_size: int = 128,
         is_symmetric: bool = False,
         accuracy_level: int | None = None,
@@ -1142,6 +1143,7 @@ class MatMulNBitsQuantizer:
             nodes_to_exclude = []
         self.model = ONNXModel(onnx.load(model)) if isinstance(model, str) else ONNXModel(model)
         self.model_path = model if isinstance(model, str) else None
+        self.bits = bits
         self.block_size = block_size
         self.is_symmetric = is_symmetric
         self.accuracy_level = accuracy_level
@@ -1151,13 +1153,13 @@ class MatMulNBitsQuantizer:
 
         if algo_config is None:
             algo_config = DefaultWeightOnlyQuantConfig(
+                bits=bits,
                 block_size=block_size,
                 is_symmetric=is_symmetric,
                 accuracy_level=accuracy_level,
                 quant_format=quant_format,
                 op_types_to_quantize=op_types_to_quantize,
                 quant_axes=quant_axes,
-                bits=4,  # default to 4 bits
             )
 
         self.algo_config = algo_config
@@ -1490,13 +1492,13 @@ if __name__ == "__main__":
         )
     elif args.quant_method == "default":
         quant_config = DefaultWeightOnlyQuantConfig(
+            bits=args.bits,
             block_size=args.block_size,
             is_symmetric=args.symmetric,
             accuracy_level=args.accuracy_level,
             quant_format=quant_format,
             op_types_to_quantize=op_types_to_quantize,
             quant_axes=quant_axes,
-            bits=args.bits,
         )
     elif args.quant_method == "rtn":
         quant_config = RTNWeightOnlyQuantConfig(op_types_to_quantize=op_types_to_quantize)
@@ -1527,6 +1529,7 @@ if __name__ == "__main__":
 
     quant = MatMulNBitsQuantizer(
         model=model,
+        bits=args.bits,
         accuracy_level=args.accuracy_level,
         nodes_to_exclude=args.nodes_to_exclude,
         nodes_to_include=args.nodes_to_include,
