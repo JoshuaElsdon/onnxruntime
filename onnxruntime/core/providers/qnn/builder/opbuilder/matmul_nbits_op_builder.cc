@@ -92,8 +92,8 @@ KernelParams GetKernelParams(const NodeUnit& node_unit, const logging::Logger& l
   uint32_t input_dims = node_unit.Inputs()[0].node_arg.Shape()->dim_size();
   uint32_t output_dims = node_unit.Outputs()[0].node_arg.Shape()->dim_size();
 
-  uint32_t k_from_input = node_unit.Inputs()[0].node_arg.Shape()->dim(input_dims - 1).dim_value();
-  uint32_t n_from_output = node_unit.Outputs()[0].node_arg.Shape()->dim(output_dims - 1).dim_value();
+  uint32_t k_from_input = static_cast<uint32_t>(node_unit.Inputs()[0].node_arg.Shape()->dim(input_dims - 1).dim_value());
+  uint32_t n_from_output = static_cast<uint32_t>(node_unit.Outputs()[0].node_arg.Shape()->dim(output_dims - 1).dim_value());
   if (params.K.uint32Value != k_from_input) {
     LOGS(logger, ERROR) << "K value from MatMulNBits node attribute does not match input shape. Expected: " << k_from_input << ", got: " << params.K.uint32Value;
     throw std::invalid_argument("K value mismatch in MatMulNBits node.");
@@ -528,14 +528,14 @@ Status MatMulNBitsOpBuilder::ProcessAttributesAndOutputs([[maybe_unused]]QnnMode
       output_info.shape[output_info.shape.size()-1] = hints.split_size;
       // make some output tensors.
       std::string output_name = node_unit.Name() + "Output_" + std::to_string(i);
-      QnnTensorWrapper output_tensor(
+      QnnTensorWrapper output_tensor_split(
           output_name,
           QNN_TENSOR_TYPE_NATIVE,
           output_info.qnn_data_type,
           std::move(output_info.quant_param),  // If unquantized, otherwise pass scale/offset
           std::move(output_info.shape));
       // add the tensor to the model wrapper.
-      ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(output_tensor)), "Failed to add output tensor");
+      ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(output_tensor_split)), "Failed to add output tensor");
       split_output_tensor_names.push_back(output_name);
       LOGS(logger, INFO) << "Added output tensor: " << output_name << " with shape_size " << output_info.shape.size();
       for (size_t j = 0; j < output_info.shape.size(); ++j) {

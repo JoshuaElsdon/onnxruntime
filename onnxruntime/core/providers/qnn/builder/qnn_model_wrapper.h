@@ -309,6 +309,7 @@ ParsedHints parse_hints( const int output_dimension, const logging::Logger& logg
           LOGS(logger, INFO) << "Target out split size set to: " << hints.split_size;
         } catch (const std::invalid_argument& e) {
           LOGS(logger, ERROR) << "Invalid split size: " << split_size_str;
+          LOGS(logger, ERROR) << "Exception: " << e.what();
         }
       } else {
         LOGS(logger, ERROR) << "No underscore found after 'split'";
