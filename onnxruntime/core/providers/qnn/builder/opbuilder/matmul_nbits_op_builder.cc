@@ -300,8 +300,14 @@ Status MatMulNBitsOpBuilder::ProcessInputs([[maybe_unused]]QnnModelWrapper& qnn_
       size_t b_chunk_size = tensor_elements / 4;  // each chunk has target_out_split_size*in_size elements, 4 are packed into a byte.
       // print the b_chunk_size
       LOGS(logger, INFO) << "B chunk size: " << b_chunk_size;
+      size_t b_offset = i * b_chunk_size;
+      size_t b_end    = std::min(b_offset + b_chunk_size, b_values_orig.size());
+
+      if (b_offset >= b_end) {
+        ORT_THROW("split_count or split_size inconsistent with B tensor size");
+      }
       // split the b_values into chunks of size b_chunk_size.
-      std::vector<uint8_t> b_values_split(b_values_orig.begin() + i * b_chunk_size, b_values_orig.begin() + (i + 1) * b_chunk_size);
+      std::vector<uint8_t> b_values_split(b_values_orig.begin() + b_offset,b_values_orig.begin() + b_end);
       TensorInfo b_info = {};
       // print the original tensor info
       ORT_RETURN_IF_ERROR(qnn_model_wrapper.GetTensorInfo(node_inputs[1], b_info));
@@ -316,6 +322,7 @@ Status MatMulNBitsOpBuilder::ProcessInputs([[maybe_unused]]QnnModelWrapper& qnn_
           std::move(b_info.shape),
           std::move(b_values_split)  // your replacement buffer
       );
+      
       // add the tensor to the model wrapper.
       ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(b_input_tensor)), "Failed to add input");
       split_b_tensor_names.push_back(b_input_name);
@@ -387,14 +394,15 @@ Status MatMulNBitsOpBuilder::ProcessInputs([[maybe_unused]]QnnModelWrapper& qnn_
       size_t b_chunk_size = tensor_elements / 4;  // each chunk has target_out_split_size*in_size elements, 4 are packed into a byte.
       LOGS(logger, INFO) << "B chunk size: " << b_chunk_size;
       // split the b_values into chunks of size b_chunk_size.
+      
       b_values.assign(b_values_orig.begin() + i * b_chunk_size, b_values_orig.begin() + (i + 1) * b_chunk_size);
 
       // ensure allignment of b_values to 32 bits
       std::vector<int32_t> b_values_shuff_32(b_values.size() / sizeof(int32_t), 0);
+      
       split_tile_2bit(b_values_shuff_32.data(), reinterpret_cast<int32_t*>(b_values.data()), kernel_params.K.uint32Value, hints.split_size);
       uint8_t* bytes = reinterpret_cast<uint8_t*>(b_values_shuff_32.data());
       std::vector<uint8_t> b_values_shuff(bytes, bytes + b_values.size());
-
       TensorInfo b_info = {};
       ORT_RETURN_IF_ERROR(qnn_model_wrapper.GetTensorInfo(node_inputs[1], b_info));
       b_info.shape = {1, 2, kernel_params.K.uint32Value / 8, hints.split_size};  // reshape to 1, 2, N, K/block_size

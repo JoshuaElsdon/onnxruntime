@@ -316,6 +316,20 @@ ParsedHints parse_hints( const int output_dimension, const logging::Logger& logg
       }
     }
   }
+  else
+  {
+    // we did not not get a hint about split size, lets default to 1024 or 1280, which ever splits the output dimension exactly. 
+    if (output_dimension % 1024 == 0) {
+      hints.split_size = 1024;
+      LOGS(logger, INFO) << "Default split size set to: " << hints.split_size;
+    } else if (output_dimension % 1280 == 0) {
+      hints.split_size = 1280;
+      LOGS(logger, INFO) << "Default split size set to: " << hints.split_size;
+    } else {
+      hints.split_size = output_dimension; // no split
+      LOGS(logger, INFO) << "No valid split size found, using output dimension: " << hints.split_size;
+    }
+  }
 
   if (hints.split_size > 0) {
     // Calculate the split count based on the output dimension.
