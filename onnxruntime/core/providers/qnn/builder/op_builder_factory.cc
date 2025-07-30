@@ -65,7 +65,7 @@ OpBuilderRegistrations::OpBuilderRegistrations() {
 
     CreateSimpleOpBuilder("LpNormalization", *this);
 
-    CreateSimpleOpBuilder("Matmul2Bit" , *this);
+    CreateSimpleOpBuilder("MatMulNBits" , *this);
   }
 
   {
