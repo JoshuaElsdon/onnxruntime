@@ -64,8 +64,6 @@ OpBuilderRegistrations::OpBuilderRegistrations() {
     CreateSimpleOpBuilder("GridSample", *this);
 
     CreateSimpleOpBuilder("LpNormalization", *this);
-
-    CreateSimpleOpBuilder("MatMulNBits" , *this);
   }
 
   {
@@ -161,6 +159,10 @@ OpBuilderRegistrations::OpBuilderRegistrations() {
 
   {
     CreateLRNOpBuilder("LRN", *this);
+  }
+
+  {
+    CreateMatMulNBitsOpBuilder("MatMulNBits", *this);
   }
 
   {
