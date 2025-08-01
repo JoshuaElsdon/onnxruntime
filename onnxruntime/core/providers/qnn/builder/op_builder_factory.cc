@@ -160,11 +160,6 @@ OpBuilderRegistrations::OpBuilderRegistrations() {
   {
     CreateLRNOpBuilder("LRN", *this);
   }
-
-  {
-    CreateMatMulNBitsOpBuilder("MatMulNBits", *this);
-  }
-
   {
     CreateTransposeOpBuilder("Transpose", *this);
   }
