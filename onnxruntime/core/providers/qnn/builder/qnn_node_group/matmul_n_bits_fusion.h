@@ -49,7 +49,7 @@ class MatMulNBitsQDQFusion : public IQnnNodeGroup {
       const logging::Logger& logger);
 
  private:
-  std::array<const NodeUnit*, 2> node_units_;
+  std::array<const NodeUnit*, 4> node_units_;
 };
 
 }  // namespace qnn

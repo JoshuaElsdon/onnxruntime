@@ -17,11 +17,11 @@ namespace onnxruntime {
 namespace qnn {
 
 // Forward declarations.
-#define ValidateOnQnn(qnn_model_wrapper, matmul_n_bits_unit, input_dq_unit, output_q_unit, scale_dq_unit) \
-  CreateOrValidateOnQnn((qnn_model_wrapper), (matmul_n_bits_unit), (input_dq_unit), (output_q_unit), (scale_dq_unit), true)
-#define CreateOnQnn(qnn_model_wrapper, matmul_n_bits_unit, input_dq_unit, output_q_unit, scale_dq_unit) \
-  CreateOrValidateOnQnn((qnn_model_wrapper), (matmul_n_bits_unit), (input_dq_unit), (output_q_unit), (scale_dq_unit), false)
-static Status CreateOrValidateOnQnn(QnnModelWrapper& qnn_model_wrapper, const NodeUnit& matmul_n_bits_unit, const NodeUnit& input_dq_unit, const NodeUnit& output_q_unit, const NodeUnit& scale_dq_unit, bool validate);
+#define ValidateOnQnn(qnn_model_wrapper, input_dq_unit, matmul_n_bits_unit, output_q_unit, scale_dq_unit) \
+  CreateOrValidateOnQnn((qnn_model_wrapper), (input_dq_unit), (matmul_n_bits_unit), (output_q_unit), (scale_dq_unit), true)
+#define CreateOnQnn(qnn_model_wrapper, input_dq_unit, matmul_n_bits_unit, output_q_unit, scale_dq_unit) \
+  CreateOrValidateOnQnn((qnn_model_wrapper), (input_dq_unit), (matmul_n_bits_unit), (output_q_unit), (scale_dq_unit), false)
+static Status CreateOrValidateOnQnn(QnnModelWrapper& qnn_model_wrapper, const NodeUnit& input_dq_unit, const NodeUnit& matmul_n_bits_unit, const NodeUnit& output_q_unit, const NodeUnit& scale_dq_unit, bool validate);
 
 std::unique_ptr<IQnnNodeGroup> MatMulNBitsQDQFusion::TryFusion(
     QnnModelWrapper& qnn_model_wrapper,
@@ -49,7 +49,7 @@ std::unique_ptr<IQnnNodeGroup> MatMulNBitsQDQFusion::TryFusion(
 
   // the matmul_n_bits must have a Dequanize as input to its scale input (input index 2).
   const std::array<std::string_view, 1> input_types = {"DequantizeLinear"};
-  const NodeUnit* scale_dq_node_unit = GetInputTypeOnIndex(graph_viewer, matmul_n_bits_node_unit, 2, node_to_node_unit, node_unit_to_qnn_node_group);
+  const NodeUnit* scale_dq_node_unit = GetInputTypeOnIndex(graph_viewer, *matmul_n_bits_node_unit, 2, input_types, node_to_node_unit, node_unit_to_qnn_node_group);
 
   if (scale_dq_node_unit == nullptr) {
     return nullptr;
@@ -69,11 +69,11 @@ std::unique_ptr<IQnnNodeGroup> MatMulNBitsQDQFusion::TryFusion(
     return nullptr;
   }
 
-  return std::make_unique<MatMulNBitsQDQFusion>(input_dq_unit, *matmul_n_bits_node_unit);
+  return std::make_unique<MatMulNBitsQDQFusion>(input_dq_unit, *matmul_n_bits_node_unit, *output_q_node_unit, *scale_dq_node_unit);
 }
 
-MatMulNBitsQDQFusion::MatMulNBitsQDQFusion(const NodeUnit& matmul_n_bits_unit, const NodeUnit& input_dq_unit, const NodeUnit& output_q_unit, const NodeUnit& scale_dq_unit)
-    : node_units_{&matmul_n_bits_unit, &input_dq_unit, &output_q_unit, &scale_dq_unit} {
+MatMulNBitsQDQFusion::MatMulNBitsQDQFusion(const NodeUnit& input_dq_unit, const NodeUnit& matmul_n_bits_unit, const NodeUnit& output_q_unit, const NodeUnit& scale_dq_unit)
+    : node_units_{&input_dq_unit, &matmul_n_bits_unit, &output_q_unit, &scale_dq_unit} {
 }
 
 Status MatMulNBitsQDQFusion::IsSupported(QnnModelWrapper& qmw, const logging::Logger& logger) const {
@@ -95,14 +95,14 @@ const NodeUnit* MatMulNBitsQDQFusion::GetTargetNodeUnit() const {
 }
 
 static Status CreateOrValidateOnQnn(QnnModelWrapper& qnn_model_wrapper,
-                                    const NodeUnit& matmul_n_bits_unit,
                                     const NodeUnit& input_dq_unit,
+                                    const NodeUnit& matmul_n_bits_unit,
                                     const NodeUnit& output_q_unit,
                                     const NodeUnit& scale_dq_unit,
                                     bool validate) {
   assert(matmul_n_bits_unit.OpType() == "MatMulNBits" && input_dq_unit.OpType() == "DequantizeLinear" &&
          output_q_unit.OpType() == "QuantizeLinear" && scale_dq_unit.OpType() == "DequantizeLinear");
-  const auto& input_dq_node_name = utils::GetNodeName(matmul_n_bits_unit);
+  const auto& node_name = utils::GetNodeName(matmul_n_bits_unit);
   const NodeUnitIODef& a_input_def = input_dq_unit.Inputs()[0];
   const NodeUnitIODef& b_input_def = matmul_n_bits_unit.Inputs()[1];
   const NodeUnitIODef& scale_input_def = scale_dq_unit.Inputs()[0];
@@ -124,10 +124,12 @@ static Status CreateOrValidateOnQnn(QnnModelWrapper& qnn_model_wrapper,
                                                           "MatMulNBits",
                                                           {a_input_tensor.GetQnnTensor(), b_input_tensor.GetQnnTensor(), scale_input_tensor.GetQnnTensor(), zeros_input_tensor.GetQnnTensor()},
                                                           {output_tensor.GetQnnTensor()},
-                                                          {}),
-                                                        "Failed to validate MatMulNBits fused node.");
+                                                          {}));
   } else {
-    ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(input_tensor)), "Failed to add input");
+    ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(a_input_tensor)), "Failed to add input");
+    ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(b_input_tensor)), "Failed to add input");
+    ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(scale_input_tensor)), "Failed to add input");
+    ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(zeros_input_tensor)), "Failed to add input");
     ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(output_tensor)), "Failed to add output");
     ORT_RETURN_IF_NOT(qnn_model_wrapper.CreateQnnNode(node_name,
                                                       QNN_OP_PACKAGE_NAME_QTI_AISW,

@@ -119,7 +119,7 @@ Status MatMulNBitsOpBuilder::ProcessAttributesAndOutputs(QnnModelWrapper& qnn_mo
     NodeUnitIODef io_def{*quantize_node->InputDefs()[0], qp};
     ORT_RETURN_IF_ERROR(op_output_quant_param.Init(qnn_model_wrapper, io_def));
   } else {
-    return ORT_MAKE_STATUS(ONNXRUNTIME, FAIL, "Missing QuantizeLinear consumer for output: ", input_to_quantize);
+    return ORT_MAKE_STATUS(ONNXRUNTIME, FAIL, "Missing QuantizeLinear consumer for output: ", output_to_quantize);
   }
 
   // Step 4: Get shape from original node output
@@ -172,7 +172,7 @@ Status MatMulNBitsOpBuilder::ProcessAttributesAndOutputs(QnnModelWrapper& qnn_mo
     LOGS(logger, INFO) << "  - " << in;
   }
   LOGS(logger, INFO) << "Outputs         :";
-  LOGS(logger, INFO) << "  - " << output_name;
+  LOGS(logger, INFO) << "  - " << actual_output_name;
   LOGS(logger, INFO) << "Params          :";
   for (const auto& param : param_tensor_names) {
     LOGS(logger, INFO) << "  - " << param;
@@ -186,7 +186,7 @@ Status MatMulNBitsOpBuilder::ProcessAttributesAndOutputs(QnnModelWrapper& qnn_mo
                         QNN_OP_PACKAGE_NAME_QTI_AISW,
                         op_type,
                         std::move(input_names),
-                        {output_name},
+                        {actual_output_name},
                         std::move(param_tensor_names),
                         do_op_validation),
                     "Failed to create QNN MatMulNBits node.");

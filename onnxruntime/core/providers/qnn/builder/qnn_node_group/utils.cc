@@ -62,21 +62,27 @@ const NodeUnit* GetOnlyChildOfType(const GraphViewer& graph_viewer,
 }
 
 const NodeUnit* GetInputTypeOnIndex(const GraphViewer& graph_viewer, const NodeUnit& main_node_unit, const int input_index, gsl::span<const std::string_view> input_types,
-                                    const std::unordered_map<const Node*, const NodeUnit*>& node_to_node_unit, const std::unordered_map<const NodeUnit*, const IQnnNodeGroup*>& node_unit_to_qnn_node_group) {
+                                    const std::unordered_map<const Node*, const NodeUnit*>& node_unit_map, const std::unordered_map<const NodeUnit*, const IQnnNodeGroup*>& qnn_node_group_map) {
   // the main node is the one that should have an input of the given type. For example it could be a MatMulNBits node that has a DequantizeLinear as input on its scale input (input index 2).
   const Node& main_node = main_node_unit.GetNode();
-  // check that there are at least input_index inputs
-  if (main_node.InputDefs().size() <= input_index) {
-    return nullptr;
+
+  Node::EdgeConstIterator input_it = main_node.InputEdgesBegin();
+  if (main_node.GetInputEdgesCount() > input_index) {
+    // std::advance(input_it, input_index);  this would be a cleaner solution, need to specialize the iterator.
+    size_t idx = 0;
+    while (idx++ < input_index && input_it != main_node.InputEdgesEnd()) {
+      ++input_it;
+    }
+  } else {
+    return nullptr;  // Invalid input index
   }
-  const NodeArg& input_node_arg = main_node.InputDefs()[input_index];
-  const Node* input_node = graph_viewer.GetProducerNode(input_node_arg.Name());
-  if (input_node == nullptr) {
+  const Node& input_node = input_it->GetNode();
+  if (graph_viewer.GetNode(input_node.Index()) == nullptr) {
     return nullptr;  // Node is not in this GraphViewer
   }
 
   // check if the input node is a valid type
-  const std::string& input_type = input_node->OpType();
+  const std::string& input_type = input_node.OpType();
   bool is_valid_input_type = false;
   for (const auto& valid_op_type : input_types) {
     if (valid_op_type == input_type) {
@@ -96,7 +102,7 @@ const NodeUnit* GetInputTypeOnIndex(const GraphViewer& graph_viewer, const NodeU
 
   // Check if input node has already been handled. Should not be the case if the calling
   // fusion function has been called in topological order, but check to be safe.
-  if (node_unit_to_qnn_node_group.count(input_node_unit) != 0) {
+  if (qnn_node_group_map.count(input_node_unit) != 0) {
     return nullptr;
   }
   // input must not already be part of a QDQ NodeUnit (i.e., be standalone).
@@ -105,6 +111,7 @@ const NodeUnit* GetInputTypeOnIndex(const GraphViewer& graph_viewer, const NodeU
   }
 
   return input_node_unit;
+}
 
 }  // namespace qnn
 }  // namespace onnxruntime
