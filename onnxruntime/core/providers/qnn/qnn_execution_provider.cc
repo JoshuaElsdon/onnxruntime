@@ -455,33 +455,24 @@ QNNExecutionProvider::QNNExecutionProvider(const ProviderOptions& provider_optio
     LOGS_DEFAULT(VERBOSE) << "Custom op package path: " << op_pack_path_;
   }
 
-  dump_json_qnn_graph_ = ParseBoolOption("dump_json_qnn_graph", false, provider_options_map);
-
-  static const std::string QNN_GRAPH_DUMP_DIR = "json_qnn_graph_dir";
-  auto json_graphs_dir_pos = provider_options_map.find(QNN_GRAPH_DUMP_DIR);
-
-  if (json_graphs_dir_pos != provider_options_map.end()) {
-    json_qnn_graph_dir_ = json_graphs_dir_pos->second;
-    if (dump_json_qnn_graph_) {
-      LOGS_DEFAULT(INFO) << "JSON graphs directory: " << json_qnn_graph_dir_;
-    } else {
-      LOGS_DEFAULT(WARNING) << "Provided a directory for dumping QNN JSON graphs, "
-                            << "but did not enable dumping of QNN JSON graphs.";
-    }
+  static const std::string QNN_CUSTOM_OP_PACKAGE_INTERFACE = "op_pack_interface";
+  auto op_pack_interface_pos = provider_options_map.find(QNN_CUSTOM_OP_PACKAGE_INTERFACE);
+  if (op_pack_interface_pos != provider_options_map.end()) {
+    op_pack_interface_ = op_pack_interface_pos->second;
+    LOGS_DEFAULT(VERBOSE) << "Custom op package interface: " << op_pack_interface_;
   }
 
-  // For context binary generation with weight sharing enabled, use the QnnBackendManager from the shared context if it exits
-  // So that all graphs from later sessions will be compiled into the same QNN context
-  if (context_cache_enabled_ && share_ep_contexts_ && SharedContext::GetInstance().GetSharedQnnBackendManager()) {
-    qnn_backend_manager_ = SharedContext::GetInstance().GetSharedQnnBackendManager();
-    // Clear the QnnBackendManager from singleton to stop the resource share
-    if (stop_share_ep_contexts_) {
-      SharedContext::GetInstance().ResetSharedQnnBackendManager();
-    }
-  } else {
-    qnn_backend_manager_ = qnn::QnnBackendManager::Create(
+  static const std::string QNN_CUSTOM_OP_PACKAGE_TARGET = "op_pack_target";
+  auto op_pack_target_pos = provider_options_map.find(QNN_CUSTOM_OP_PACKAGE_TARGET);
+  if (op_pack_target_pos != provider_options_map.end()) {
+    op_pack_target_ = op_pack_target_pos->second;
+    LOGS_DEFAULT(VERBOSE) << "Custom op package target: " << op_pack_target_;
+  }
+  qnn_backend_manager_ = qnn::QnnBackendManager::Create(
       qnn::QnnBackendManagerConfig{backend_path,
                                   op_pack_path_,
+                                  op_pack_interface_,
+                                  op_pack_target_,
                                    profiling_level_etw,
                                    profiling_level,
                                    profiling_file_path,
