@@ -234,7 +234,7 @@ static Status CreateOrValidateOnQnn(QnnModelWrapper& qnn_model_wrapper,
 
     weights_info.qnn_data_type = QNN_DATATYPE_UFIXED_POINT_8;
 
-    weights_info.quant_param = QnnQuantParamsWrapper(1.0f, 0);
+    // weights_info.quant_param = QnnQuantParamsWrapper(1.0f, 0);
     weights_info.is_initializer = false;
 
     std::string weights_name = node_name + "_weights_raw";
