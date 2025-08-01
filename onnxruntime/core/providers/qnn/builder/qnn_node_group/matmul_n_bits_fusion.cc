@@ -329,7 +329,7 @@ static Status CreateOrValidateOnQnn(QnnModelWrapper& qnn_model_wrapper,
     const auto& input_defs = dq_node.InputDefs();
 
     float scale_scale = 1.0f;
-    int32_t scale_zero = 100;
+    int32_t scale_zero = 0;
 
     if (input_defs.size() >= 2) {
       const NodeArg* scale_tensor_arg = input_defs[1];  // the "scale" input
@@ -397,13 +397,10 @@ static Status CreateOrValidateOnQnn(QnnModelWrapper& qnn_model_wrapper,
       unpacked_scales.push_back(static_cast<float>(scale_values[i] + scale_values[i+1]*256 - scale_zero) * scale_scale);  // Assuming scale is in [0, 255]
     }
 
-    // print 5 scales
-    LOGS(logger, INFO) << "Unpacked scales (first 5): ";
-    for (size_t i = 0; i < std::min<size_t>(5, unpacked_scales.size()); ++i) {
-      LOGS(logger, INFO) << "  " << i << ": " << unpacked_scales[i];
-    }
-
     // loop through all the weights in batches of 64 and subtract a zero value and scale the value
+    // for logging and debugging purposes we get all the floating points numbers in a vector, 
+    // we could have just extracted the min and max as we went along, but this is easier to debug.
+    // TODO , optimize when the functionality is confirmed to work.
     std::vector<float> weights_float;
     weights_float.reserve(unpacked_b_values.size());  // reserve enough space for the weights
     for (size_t group = 0; group < unpacked_b_values.size() / 64; ++group)
@@ -430,8 +427,6 @@ static Status CreateOrValidateOnQnn(QnnModelWrapper& qnn_model_wrapper,
       }
     }
 
-    LOGS(logger, INFO) << "Weights min: " << min_weight << ", max: " << max_weight;
-
     // convert these to a scale and offset for a 8 bit unsigned fixed point representation
     float scale = (max_weight - min_weight) / 255.0f;  // Scale for 8-bit unsigned fixed point
     int32_t offset = - static_cast<int32_t>(std::round(-min_weight / scale)); 
@@ -445,53 +440,28 @@ static Status CreateOrValidateOnQnn(QnnModelWrapper& qnn_model_wrapper,
     }
 
     std::string weights_name = node_name + "_weights_raw";
-    bool use_unpack_weights = false;
-    if (!use_unpack_weights){
-      // for testing implement the unpacked weights as a constant tensor.
-      std::vector<uint32_t> weights_shape = {K_scalar.uint32Value, N_scalar.uint32Value};
-      std::vector<uint8_t> raw_bytes;
-      raw_bytes.reserve(weights_float.size() * sizeof(uint8_t));
-      for (size_t i = 0; i < weights_float.size(); ++i) {
-        // Convert each float weight to uint8_t
-        uint8_t weight_value = static_cast<uint8_t>(std::round(weights_float[i] / scale + offset));
-        raw_bytes.push_back(weight_value);
-      }
-      QnnTensorWrapper weights_tensor(weights_name,
-                                      QNN_TENSOR_TYPE_STATIC,
-                                      QNN_DATATYPE_UFIXED_POINT_8,
-                                      QnnQuantParamsWrapper(scale, offset),
-                                      std::move(weights_shape),
-                                      std::move(raw_bytes),
-                                    QNN_TENSORMEMTYPE_RAW);
-      ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(weights_tensor)), "Failed to add tensor.");
-      LOGS(logger, INFO) << "Added weights tensor: " << weights_name;
-      // Create the MatMul node using the constant weights tensor.
 
-    }
-    else
-    {
-      // this uses the unpack operator to unpack the weights at runtime.
-      
-      std::vector<uint32_t> weights_shape = {K_scalar.uint32Value, N_scalar.uint32Value};
+    // this uses the unpack operator to unpack the weights at runtime.
+    
+    std::vector<uint32_t> weights_shape = {K_scalar.uint32Value, N_scalar.uint32Value};
 
-      QnnTensorWrapper weights_tensor(weights_name,
-                                      QNN_TENSOR_TYPE_NATIVE,
-                                      QNN_DATATYPE_UFIXED_POINT_8,
-                                      QnnQuantParamsWrapper(scale, offset),
-                                      std::move(weights_shape));
+    QnnTensorWrapper weights_tensor(weights_name,
+                                    QNN_TENSOR_TYPE_NATIVE,
+                                    QNN_DATATYPE_UFIXED_POINT_8,
+                                    QnnQuantParamsWrapper(scale, offset),
+                                    std::move(weights_shape));
 
-      ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(weights_tensor)), "Failed to add tensor.");
+    ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(weights_tensor)), "Failed to add tensor.");
 
-      ORT_RETURN_IF_NOT(qnn_model_wrapper.CreateQnnNode(node_name,
-                                                        "UnpackWeightsNBits",
-                                                        "UnpackWeightsNBits",
-                                                        {b_input_def.node_arg.Name(), scale_input_def.node_arg.Name(), zeros_input_def.node_arg.Name()},
-                                                        {weights_name},
-                                                        std::move(param_tensor_names),
-                                                        validate),
-                        "Failed to add fused MatMulNBits fused node.");
+    ORT_RETURN_IF_NOT(qnn_model_wrapper.CreateQnnNode(node_name,
+                                                      "UnpackWeightsNBits",
+                                                      "UnpackWeightsNBits",
+                                                      {b_input_def.node_arg.Name(), scale_input_def.node_arg.Name(), zeros_input_def.node_arg.Name()},
+                                                      {weights_name},
+                                                      std::move(param_tensor_names),
+                                                      validate),
+                      "Failed to add fused MatMulNBits fused node.");
 
-    }
 
     std::vector<std::string> param_tensor_names;
 
@@ -504,25 +474,10 @@ static Status CreateOrValidateOnQnn(QnnModelWrapper& qnn_model_wrapper,
 
     Qnn_Scalar_t t1 = QNN_SCALAR_INIT; 
     t1.dataType    = QNN_DATATYPE_BOOL_8; 
-    t1.bool8Value  = 1;
+    t1.bool8Value  = 1; // transpose the wieght input.
     QnnParamWrapper p1(input_dq_unit.Index(), input_dq_unit.Name(), QNN_OP_MAT_MUL_PARAM_TRANSPOSE_IN1, t1);
     param_tensor_names.push_back(p1.GetParamTensorName());
     qnn_model_wrapper.AddParamWrapper(std::move(p1));
-
-    // set up the param tensor names for the MatMul node.
-    TensorInfo output_info{};
-    ORT_RETURN_IF_ERROR(qnn_model_wrapper.GetTensorInfo(output_q_unit.Outputs()[0], output_info));
-    std::vector<uint32_t> op_output_shape = output_info.shape;
-    QnnQuantParamsWrapper op_output_quant_param = output_info.quant_param.Copy();
-
-    const bool is_graph_output = qnn_model_wrapper.IsGraphOutput(output_def.node_arg.Name());
-    LOGS(logger, INFO) << "Is graph output: " << is_graph_output;
-    Qnn_TensorType_t op_output_tensor_type =
-      is_graph_output ? QNN_TENSOR_TYPE_APP_READ : QNN_TENSOR_TYPE_NATIVE;
-    QnnTensorWrapper op_output_tensor_wrapper(output_def.node_arg.Name(), op_output_tensor_type, output_info.qnn_data_type,
-                                          op_output_quant_param.Copy(), std::vector<uint32_t>(op_output_shape));
-    ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(op_output_tensor_wrapper)),
-                    "Failed to add output tensor.");
 
     ORT_RETURN_IF_NOT(qnn_model_wrapper.CreateQnnNode(node_name + "mat_mul", QNN_OP_PACKAGE_NAME_QTI_AISW,
                                                       QNN_OP_MAT_MUL,
