@@ -192,6 +192,79 @@ void PrintTensorProto(const ONNX_NAMESPACE::TensorProto* tensor) {
   std::cout << "  (Note: other typed fields like float_data/int32_data not handled in this printout)\n";
 }
 
+static inline void split_tile_2bit(int32_t *dst,
+                                    const int32_t *src,
+                                    const int32_t W,
+                                    const int32_t H)
+  {
+    //std::fill(dst, dst + ((H * W * 2) >> 5), 0);
+
+    for (int32_t y = 0; y < H; ++y)
+    {
+      for (int32_t x = 0; x < W; ++x)
+      {
+        const int32_t idx = y * W + x;
+
+        const uint32_t word = *(reinterpret_cast<const uint32_t*>(src) + (idx * 2) / 32);
+        const uint32_t two = (word >> (idx * 2) % 32) & 0b11;
+        const uint32_t b0 = two & 1u;
+        const uint32_t b1 = (two >> 1u) & 1u;
+
+        // Destination coordinates
+        const int32_t bit_idx0 = (y / 128) * W * 128 + (x / 4) * 512 + (y & 127) * 4 + x % 4;
+        const int32_t bit_idx1 = bit_idx0 + H * W;
+
+        dst[bit_idx0 / 32] |= (b0 << (bit_idx0 % 32));
+        dst[bit_idx1 / 32] |= (b1 << (bit_idx1 % 32));
+      }
+    }
+  }
+
+  static inline void split_transpose_2bit(int32_t *dst,
+                                          const int32_t *src,
+                                          const int32_t W,
+                                          const int32_t H)
+  {
+    //std::fill(dst, dst + ((H * W * 2) >> 5), 0);
+
+    for (int32_t y = 0; y < H; ++y)
+    {
+      for (int32_t x = 0; x < W; ++x)
+      {
+        const int32_t idx = y * W + x;
+
+        const uint32_t word = *(reinterpret_cast<const uint32_t*>(src) + (idx * 2) / 32);
+        const uint32_t two = (word >> (idx * 2) % 32) & 0b11;
+        const uint32_t b0 = two & 1u;
+        const uint32_t b1 = (two >> 1u) & 1u;
+
+        // Destination coordinates
+        const int32_t bit_idx0 = x * H + y;
+        const int32_t bit_idx1 = bit_idx0 + H * W;
+
+        dst[bit_idx0 / 32] |= (b0 << (bit_idx0 % 32));
+        dst[bit_idx1 / 32] |= (b1 << (bit_idx1 % 32));
+      }
+    }
+  }
+
+  static inline void transpose(uint16_t *dst,
+                              const uint16_t *src,
+                              const int32_t W,
+                              const int32_t H)
+  {
+    for (int32_t y = 0; y < H; ++y)
+    {
+      for (int32_t x = 0; x < W; ++x)
+      {
+        const int32_t src_idx = y * W + x;
+        const int32_t dst_idx = x * H + y;
+
+        dst[dst_idx] = src[src_idx];
+      }
+    }
+  }
+
 static Status CreateOrValidateOnQnn(QnnModelWrapper& qnn_model_wrapper,
                                     const NodeUnit& input_dq_unit,
                                     const NodeUnit& matmul_n_bits_unit,
@@ -225,16 +298,7 @@ static Status CreateOrValidateOnQnn(QnnModelWrapper& qnn_model_wrapper,
   LOGS(logger, INFO) << " output_def: " << output_def.node_arg.Name();
   LOGS(logger, INFO) << " validate: " << validate;
 
-  QnnTensorWrapper a_input_tensor, b_input_tensor, scale_input_tensor, zeros_input_tensor;
-  QnnTensorWrapper output_tensor;
-
-  ORT_RETURN_IF_ERROR(qnn_model_wrapper.MakeTensorWrapper(a_input_def, a_input_tensor));
-  ORT_RETURN_IF_ERROR(qnn_model_wrapper.MakeTensorWrapper(b_input_def, b_input_tensor));
-  ORT_RETURN_IF_ERROR(qnn_model_wrapper.MakeTensorWrapper(scale_input_def, scale_input_tensor));
-  ORT_RETURN_IF_ERROR(qnn_model_wrapper.MakeTensorWrapper(zeros_input_def, zeros_input_tensor));
-  ORT_RETURN_IF_ERROR(qnn_model_wrapper.MakeTensorWrapper(output_def, output_tensor));
-
-  // currently there is only one valid set of paramters for this op.
+    // currently there is only one valid set of paramters for this op.
   Qnn_Scalar_t bits_scalar;
   bits_scalar.dataType = QNN_DATATYPE_INT_32;
   bits_scalar.uint32Value = 2;
@@ -251,6 +315,7 @@ static Status CreateOrValidateOnQnn(QnnModelWrapper& qnn_model_wrapper,
   // Get the node attributes for the MatMulNBits node.
   const Node& matmul_node = matmul_n_bits_unit.GetNode();
   const auto& matmul_node_attributes = matmul_node.GetAttributes();
+
   for (const auto& attr : matmul_node_attributes) {
     LOGS(logger, INFO) << "MatMulNBits node attribute: " << attr.first << " = " << attr.second.i();
     if (attr.first == "bits") {
@@ -274,62 +339,29 @@ static Status CreateOrValidateOnQnn(QnnModelWrapper& qnn_model_wrapper,
   param_tensor_names.push_back(K_wrapper.GetParamTensorName());
   param_tensor_names.push_back(N_wrapper.GetParamTensorName());
 
-  LOGS(logger, INFO) << "param_tensor_names: ";
-  for (const auto& name : param_tensor_names) {
-    LOGS(logger, INFO) << "  - " << name;
-  }
 
   ORT_RETURN_IF_NOT(qnn_model_wrapper.AddParamWrapper(std::move(bits_wrapper)), "Failed to add param");
-  LOGS(logger, INFO) << "Added bits param wrapper." << bits_wrapper.GetParamTensorName();
   ORT_RETURN_IF_NOT(qnn_model_wrapper.AddParamWrapper(std::move(block_size_wrapper)), "Failed to add param");
   ORT_RETURN_IF_NOT(qnn_model_wrapper.AddParamWrapper(std::move(K_wrapper)), "Failed to add param");
   ORT_RETURN_IF_NOT(qnn_model_wrapper.AddParamWrapper(std::move(N_wrapper)), "Failed to add param");
-  ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(a_input_tensor)), "Failed to add input");
-  ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(b_input_tensor)), "Failed to add input");
-  ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(scale_input_tensor)), "Failed to add input");
-  ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(zeros_input_tensor)), "Failed to add input");
-  ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(output_tensor)), "Failed to add output");
 
-  if (num_tokens == 1) {
-    LOGS(logger, INFO) << "Using the MatMulNBits kernel" << validate;
+  QnnTensorWrapper a_input_tensor, b_input_tensor, scale_input_tensor, zeros_input_tensor;
+  QnnTensorWrapper output_tensor;
 
-    ORT_RETURN_IF_NOT(qnn_model_wrapper.CreateQnnNode(node_name,
-                                                      "MatMulNBits",
-                                                      "MatMulNBits",
-                                                      {a_input_def.node_arg.Name(), b_input_def.node_arg.Name(), scale_input_def.node_arg.Name(), zeros_input_def.node_arg.Name()},
-                                                      {output_def.node_arg.Name()},
-                                                      std::move(param_tensor_names),
-                                                      validate),
-                      "Failed to add fused MatMulNBits fused node.");
+  const ModelSettings model_settings = qnn_model_wrapper.GetModelSettings();
 
-  } else {
-    LOGS(logger, INFO) << "Using the unpack_weights kernel with regular matmul, num tokens:" << num_tokens;
-    // rather than using the MatMulNBits kernel, we will use the unpack_weights kernel to get the weights, then we will pass these to a regular MatMul.
+  ORT_RETURN_IF_ERROR(qnn_model_wrapper.MakeTensorWrapper(a_input_def, a_input_tensor));
+  ORT_RETURN_IF_ERROR(qnn_model_wrapper.MakeTensorWrapper(output_def, output_tensor));
 
-    // get the tensor values for B, scales and zeros.
+  std::string b_input_name = b_input_def.node_arg.Name();
+  std::string scale_input_name = scale_input_def.node_arg.Name();
+  std::string zeros_input_name = zeros_input_def.node_arg.Name();
 
-    std::vector<uint8_t> b_values, zero_values, scale_values;
-    ORT_RETURN_IF_ERROR(GetInitializerUint8TensorValues(
-        qnn_model_wrapper.GetGraphViewer(),
-        b_input_def.node_arg.Name(),
-        b_values,
-        logger));
-    ORT_RETURN_IF_ERROR(GetInitializerUint8TensorValues(
-        qnn_model_wrapper.GetGraphViewer(),
-        zeros_input_def.node_arg.Name(),
-        zero_values,
-        logger));
-    ORT_RETURN_IF_ERROR(GetInitializerUint8TensorValues(
-        qnn_model_wrapper.GetGraphViewer(),
-        scale_input_def.node_arg.Name(),
-        scale_values,
-        logger));
+      float scale_scale = 1.0f;
+    int32_t scale_zero = 0;
 
     const Node& dq_node = scale_dq_unit.GetNode();
     const auto& input_defs = dq_node.InputDefs();
-
-    float scale_scale = 1.0f;
-    int32_t scale_zero = 0;
 
     if (input_defs.size() >= 2) {
       const NodeArg* scale_tensor_arg = input_defs[1];  // the "scale" input
@@ -364,6 +396,156 @@ static Status CreateOrValidateOnQnn(QnnModelWrapper& qnn_model_wrapper,
         LOGS(logger, INFO) << "Zero value: " << scale_zero;
       }
     }
+
+
+  if (model_settings.model_hints == "") {
+    ORT_RETURN_IF_ERROR(qnn_model_wrapper.MakeTensorWrapper(b_input_def, b_input_tensor));
+    ORT_RETURN_IF_ERROR(qnn_model_wrapper.MakeTensorWrapper(scale_input_def, scale_input_tensor));
+    ORT_RETURN_IF_ERROR(qnn_model_wrapper.MakeTensorWrapper(zeros_input_def, zeros_input_tensor));
+
+    ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(b_input_tensor)), "Failed to add input");
+    ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(scale_input_tensor)), "Failed to add input");
+    ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(zeros_input_tensor)), "Failed to add input");
+  }
+
+  else if (model_settings.model_hints == "shuffle") {
+    LOGS(logger, INFO) << "Model hints is 'shuffle'.";
+    // here we modify the input tensors for B, scales and zeros to be shuffled versions of the original tensors. 
+    // using teh split_tile_2bit, split_transpose_2bit and transpose functions to create the shuffled tensors.
+    std::vector<uint8_t> b_values, zero_values, scale_values;
+
+    b_input_name = node_name+"B_Shuffled";
+    scale_input_name = node_name+"Scale_Shuffled";
+    zeros_input_name = node_name+"Zeros_Shuffled";
+
+    LOGS(logger, INFO) << "Processing B input: " << b_input_name;
+
+    // process the B input.
+    ORT_RETURN_IF_ERROR(GetInitializerUint8TensorValues(
+        qnn_model_wrapper.GetGraphViewer(),
+        b_input_def.node_arg.Name(),
+        b_values,
+        logger));
+
+    // ensure allignment of b_values to 32 bits
+    std::vector<int32_t> b_values_shuff_32(b_values.size()/sizeof(int32_t), 0);
+    split_tile_2bit(b_values_shuff_32.data(), reinterpret_cast<int32_t*>(b_values.data()), K_scalar.uint32Value, N_scalar.uint32Value);
+    uint8_t* bytes = reinterpret_cast<uint8_t*>(b_values_shuff_32.data());
+    std::vector<uint8_t> b_values_shuff(bytes, bytes + b_values.size());
+
+    TensorInfo b_info = {};
+    ORT_RETURN_IF_ERROR(qnn_model_wrapper.GetTensorInfo(b_input_def, b_info));
+
+    QnnTensorWrapper b_tensor_wrapper(
+        b_input_name,
+        QNN_TENSOR_TYPE_STATIC,  // It's an initializer
+        QNN_DATATYPE_UINT_8,
+        std::move(b_info.quant_param), // If unquantized, otherwise pass scale/offset
+        std::move(b_info.shape),
+        std::move(b_values_shuff)  // your replacement buffer
+    );
+    ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(b_tensor_wrapper)), "Failed to add shuffled B tensor");
+
+    // process the scale input.
+    ORT_RETURN_IF_ERROR(GetInitializerUint8TensorValues(
+        qnn_model_wrapper.GetGraphViewer(),
+        scale_input_def.node_arg.Name(),
+        scale_values,
+        logger));
+
+    // ensure allignment of scale_values to 16 bits
+    std::vector<uint16_t> scale_values_shuff_16(scale_values.size()/sizeof(uint16_t), 0);
+    transpose(scale_values_shuff_16.data(), reinterpret_cast<uint16_t*>(scale_values.data()), K_scalar.uint32Value / block_size_scalar.uint32Value, N_scalar.uint32Value);
+
+    uint8_t* scale_bytes = reinterpret_cast<uint8_t*>(scale_values_shuff_16.data());
+    std::vector<uint8_t> scale_values_shuff(scale_bytes, scale_bytes + scale_values.size());
+
+    TensorInfo scales_info = {};
+    ORT_RETURN_IF_ERROR(qnn_model_wrapper.GetTensorInfo(scale_input_def, scales_info));
+    QnnTensorWrapper scale_tensor_wrapper(
+        scale_input_name,
+        QNN_TENSOR_TYPE_STATIC,  // It's an initializer
+        QNN_DATATYPE_UFIXED_POINT_16,
+        scales_info.quant_param.Copy(), // If unquantized, otherwise pass scale/offset
+        std::move(scales_info.shape),
+        std::move(scale_values_shuff)  // your replacement buffer
+    );
+    ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(scale_tensor_wrapper)), "Failed to add shuffled scale tensor");
+
+    // process the zeros input.
+    ORT_RETURN_IF_ERROR(GetInitializerUint8TensorValues(
+        qnn_model_wrapper.GetGraphViewer(),
+        zeros_input_def.node_arg.Name(),
+        zero_values,
+        logger));
+
+    // ensure allignment of zero_values to 32 bits
+    std::vector<int32_t> zero_values_shuff_32(zero_values.size()/sizeof(int32_t), 0);
+    split_transpose_2bit(zero_values_shuff_32.data(), reinterpret_cast<int32_t*>(zero_values.data()), K_scalar.uint32Value / block_size_scalar.uint32Value, N_scalar.uint32Value);
+
+    uint8_t* zero_bytes = reinterpret_cast<uint8_t*>(zero_values_shuff_32.data());
+    std::vector<uint8_t> zero_values_shuff(zero_bytes, zero_bytes + zero_values.size());
+
+    TensorInfo zero_info = {};
+    ORT_RETURN_IF_ERROR(qnn_model_wrapper.GetTensorInfo(zeros_input_def, zero_info));
+    QnnTensorWrapper zeros_tensor_wrapper(
+        zeros_input_name,
+        QNN_TENSOR_TYPE_STATIC,  // It's an initializer
+        QNN_DATATYPE_UINT_8,
+        std::move(zero_info.quant_param), // If unquantized, otherwise pass scale/offset
+        std::move(zero_info.shape),
+        std::move(zero_values_shuff)  // your replacement buffer
+    );
+    ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(zeros_tensor_wrapper)), "Failed to add shuffled zeros tensor");
+
+  }
+
+  else {
+    // error if model_hints is not empty and not "shuffle"
+    return ORT_MAKE_STATUS(ONNXRUNTIME, INVALID_ARGUMENT, "Model hints must be empty or 'shuffle'. Found: ", model_settings.model_hints);
+  }
+
+  ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(a_input_tensor)), "Failed to add input");
+
+  ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(output_tensor)), "Failed to add output");
+
+  if (num_tokens == 1) {
+    LOGS(logger, INFO) << "Using the MatMulNBits kernel" << validate;
+
+    ORT_RETURN_IF_NOT(qnn_model_wrapper.CreateQnnNode(node_name,
+                                                      "MatMulNBits",
+                                                      "MatMulNBits",
+                                                      {a_input_def.node_arg.Name(), b_input_name, scale_input_name, zeros_input_name},
+                                                      {output_def.node_arg.Name()},
+                                                      std::move(param_tensor_names),
+                                                      validate),
+                      "Failed to add fused MatMulNBits fused node.");
+
+  } else {
+    LOGS(logger, INFO) << "Using the unpack_weights kernel with regular matmul, num tokens:" << num_tokens;
+    // rather than using the MatMulNBits kernel, we will use the unpack_weights kernel to get the weights, then we will pass these to a regular MatMul.
+
+    // get the tensor values for B, scales and zeros.
+
+    std::vector<uint8_t> b_values, zero_values, scale_values;
+    ORT_RETURN_IF_ERROR(GetInitializerUint8TensorValues(
+        qnn_model_wrapper.GetGraphViewer(),
+        b_input_def.node_arg.Name(),
+        b_values,
+        logger));
+    ORT_RETURN_IF_ERROR(GetInitializerUint8TensorValues(
+        qnn_model_wrapper.GetGraphViewer(),
+        zeros_input_def.node_arg.Name(),
+        zero_values,
+        logger));
+    ORT_RETURN_IF_ERROR(GetInitializerUint8TensorValues(
+        qnn_model_wrapper.GetGraphViewer(),
+        scale_input_def.node_arg.Name(),
+        scale_values,
+        logger));
+
+
+
 
     // unpack the B tensor as 2 bit values
     std::vector<uint8_t> unpacked_b_values;
