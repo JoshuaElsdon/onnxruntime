@@ -116,6 +116,49 @@ const NodeUnit* MatMulNBitsQDQFusion::GetTargetNodeUnit() const {
   return node_units_[0];
 }
 
+// Inserts a QNN Convert operator to convert from one quantization type (e.g., uint16) to another (e.g., uint8).
+Status InsertConvertOp(QnnModelWrapper& qnn_model_wrapper,
+                       const std::string& convert_input_name,
+                       const std::string& convert_output_name,
+                       Qnn_DataType_t input_qnn_data_type,
+                       Qnn_DataType_t output_qnn_data_type,
+                       int32_t input_offset,
+                       float input_scale,
+                       const std::vector<uint32_t>& output_shape,
+                       bool do_op_validation) {
+  // Assume input is already handled.
+  float qmin = 0.0f;
+  float qmax = 255.0f;
+  ORT_RETURN_IF_ERROR(qnn::utils::GetQminQmax(input_qnn_data_type, qmin, qmax));
+  double value_min = qnn::utils::Dequantize(input_offset, input_scale, qmin);
+  double value_max = qnn::utils::Dequantize(input_offset, input_scale, qmax);
+  float scale = 0.0f;
+  int32_t offset = 0;
+  ORT_RETURN_IF_ERROR(qnn::utils::GetQuantParams(static_cast<float>(value_min),
+                                                 static_cast<float>(value_max),
+                                                 output_qnn_data_type,
+                                                 scale,
+                                                 offset));
+
+  std::vector<uint32_t> output_shape_copy = output_shape;
+  QnnTensorWrapper convert_output_tensorwrapper(convert_output_name,
+                                                QNN_TENSOR_TYPE_NATIVE,
+                                                output_qnn_data_type,
+                                                QnnQuantParamsWrapper(scale, offset),
+                                                std::move(output_shape_copy));
+  ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(convert_output_tensorwrapper)), "Failed to add tensor.");
+
+  ORT_RETURN_IF_NOT(qnn_model_wrapper.CreateQnnNode(convert_output_name,
+                                                    QNN_OP_PACKAGE_NAME_QTI_AISW,
+                                                    "Convert",
+                                                    {convert_input_name},
+                                                    {convert_output_name},
+                                                    {},
+                                                    do_op_validation),
+                    "Failed to add node.");
+  return Status::OK();
+}
+
 static Status CreateOrValidateOnQnn(QnnModelWrapper& qnn_model_wrapper,
                                     const NodeUnit& input_dq_unit,
                                     const NodeUnit& matmul_n_bits_unit,
@@ -236,7 +279,7 @@ static Status CreateOrValidateOnQnn(QnnModelWrapper& qnn_model_wrapper,
 
   TensorInfo weights_info;
   weights_info.shape = {K_scalar.uint32Value, N_scalar.uint32Value};
-  weights_info.qnn_data_type = QNN_DATATYPE_UFIXED_POINT_8;
+  weights_info.qnn_data_type = QNN_DATATYPE_UFIXED_POINT_16;
   // std::vector<float> scales(K_scalar.uint32Value, 1.0f);           // or fill with real data
   // std::vector<int32_t> offsets(K_scalar.uint32Value, 0);           // or fill with real data
   // weights_info.quant_param = QnnQuantParamsWrapper(gsl::span<const float>(scales), gsl::span<const int32_t>(offsets),1, false);
@@ -245,18 +288,36 @@ static Status CreateOrValidateOnQnn(QnnModelWrapper& qnn_model_wrapper,
 
   QnnTensorWrapper weights_tensor;
   ORT_RETURN_IF_ERROR(qnn_model_wrapper.MakeTensorWrapper(weights_info,
-                                                          node_name + "_weights",
+                                                          node_name + "_weights_16",
                                                           weights_tensor));
   ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(weights_tensor)), "Failed to add weights tensor");
                                                           
   ORT_RETURN_IF_NOT(qnn_model_wrapper.CreateQnnNode(node_name,
-                                                "UnpackWeightsNBits",
-                                                "UnpackWeightsNBits",
-                                                {b_input_def.node_arg.Name(), scale_input_def.node_arg.Name(), zeros_input_def.node_arg.Name()},
-                                                {node_name + "_weights"},
+                                                      "UnpackWeightsNBits",
+                                                      "UnpackWeightsNBits",
+                                                {a_input_def.node_arg.Name(),b_input_def.node_arg.Name(), scale_input_def.node_arg.Name(), zeros_input_def.node_arg.Name()},
+                                                {node_name + "_weights_16"},
                                                 std::move(param_tensor_names),
                                                 validate),
                 "Failed to add fused MatMulNBits fused node.");
+
+    // add a convert node from uint16 to uint8
+      const Qnn_QuantizeParams_t& quant_param = weights_info.quant_param.Get();
+    // insert Convert op after input1
+    std::string convert_input_name = node_name + "_weights_16";
+    std::string convert_output_name = convert_input_name + "_convert_" + node_name;
+    std::vector<uint32_t> weights_shape = weights_info.shape;
+
+    ORT_RETURN_IF_ERROR(InsertConvertOp(qnn_model_wrapper,
+                                        convert_input_name,
+                                        convert_output_name,
+                                        weights_info.qnn_data_type,
+                                        QNN_DATATYPE_UFIXED_POINT_8,
+                                        quant_param.scaleOffsetEncoding.offset,
+                                        quant_param.scaleOffsetEncoding.scale,
+                                        weights_shape,
+                                        validate));
+
 
     Qnn_Scalar_t scalar_param = QNN_SCALAR_INIT;
     scalar_param.dataType = QNN_DATATYPE_BOOL_8;
@@ -274,7 +335,7 @@ static Status CreateOrValidateOnQnn(QnnModelWrapper& qnn_model_wrapper,
 
     ORT_RETURN_IF_NOT(qnn_model_wrapper.CreateQnnNode(node_name + "mat_mul", QNN_OP_PACKAGE_NAME_QTI_AISW,
                                                     QNN_OP_MAT_MUL,
-                                                    {a_input_def.node_arg.Name(), node_name + "_weights"}, {output_def.node_arg.Name()},
+                                                    {a_input_def.node_arg.Name(), convert_output_name}, {output_def.node_arg.Name()},
                                                     std::move(param_tensor_names), validate),
                       "Failed to add fused Matmul node.");
 
