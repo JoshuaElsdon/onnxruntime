@@ -162,6 +162,24 @@ static Status CreateOrValidateOnQnn(QnnModelWrapper& qnn_model_wrapper,
   Qnn_Scalar_t N_scalar;
   N_scalar.dataType = QNN_DATATYPE_INT_32;
   N_scalar.uint32Value = 3072;
+
+  // Get the node attributes for the MatMulNBits node.
+  const Node& matmul_node = matmul_n_bits_unit.GetNode();
+  const auto& matmul_node_attributes = matmul_node.GetAttributes();
+  for (const auto& attr : matmul_node_attributes) {
+    LOGS(logger, INFO) << "MatMulNBits node attribute: " << attr.first << " = " << attr.second.i();
+    if (attr.first == "bits") {
+      bits_scalar.uint32Value = static_cast<uint32_t>(attr.second.i());
+    } else if (attr.first == "block_size") {
+      block_size_scalar.uint32Value = static_cast<uint32_t>(attr.second.i());
+    } else if (attr.first == "K") {
+      K_scalar.uint32Value = static_cast<uint32_t>(attr.second.i());
+    } else if (attr.first == "N") {
+      N_scalar.uint32Value = static_cast<uint32_t>(attr.second.i());
+    }
+  }
+
+
   QnnParamWrapper bits_wrapper(input_dq_unit.Index(), node_name, "bits", bits_scalar);
   QnnParamWrapper block_size_wrapper(input_dq_unit.Index(), node_name, "block_size", block_size_scalar);
   QnnParamWrapper K_wrapper(input_dq_unit.Index(), node_name, "K", K_scalar);
