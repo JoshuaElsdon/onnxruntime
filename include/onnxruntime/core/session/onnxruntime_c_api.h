@@ -3710,30 +3710,22 @@ struct OrtApi {
    *      -# "power_saver"
    *      -# "sustained_high_performance"
    *   "qnn_saver_path": File path to the QNN Saver backend library. If specified, QNN Saver will be enabled and will
-   *      dump QNN API calls to disk for replay/debugging. QNN Saver produces incorrect model inference results and
-   *      may alter model/EP partitioning. Use only for debugging.
-   *   "qnn_context_priority": QNN context priority.
-   *      Available options:
-   *      -# "low"
-   *      -# "normal": Default.
-   *      -# "normal_high"
-   *      -# "high"
-   *   "htp_graph_finalization_optimization_mode": Set the optimization mode for graph finalization on the HTP backend.
-   *      Available options:
-   *      -# "0": Default.
-   *      -# "1": Faster preparation time, less optimal graph.
-   *      -# "2": Longer preparation time, more optimal graph.
-   *      -# "3": Longest preparation time, most likely even more optimal graph. See QNN SDK documentation for specific
-   *        details.
-   *   "soc_model": The SoC model number. Refer to the QNN SDK documentation for valid values.
-   *      Defaults to "0" (unknown).
-   *   "htp_arch": The minimum HTP architecture the driver will use to select compatible QNN operators.
-   *      Available options:
-   *      -# "0": Default (none).
-   *      -# "68"
-   *      -# "69"
-   *      -# "73"
-   *      -# "75"
+   *   "op_pack_path": Path to the QNN operator pack library. the provider interface should be provided by a seperating colon, path/oppack.so:interface
+   *   dump QNN API calls to disk for replay/debugging. QNN Saver produces incorrect model inference results and
+   *   may alter model/EP partitioning. Use only for debugging.
+   *   "qnn_context_priority": QNN context priority, options: "low", "normal", "normal_high", "high". Default to "normal".
+   *   "htp_graph_finalization_optimization_mode": Set the optimization mode for graph finalization on the HTP backend. Available options:
+   *     - "0": Default.
+   *     - "1": Faster preparation time, less optimal graph.
+   *     - "2": Longer preparation time, more optimal graph.
+   *     - "3": Longest preparation time, most likely even more optimal graph. See QNN SDK documentation for specific details.
+   *   "soc_model": The SoC model number. Refer to the QNN SDK documentation for valid values. Defaults to "0" (unknown).
+   *   "htp_arch": The minimum HTP architecture the driver will use to select compatible QNN operators. Available options:
+   *     - "0": Default (none).
+   *     - "68"
+   *     - "69"
+   *     - "73"
+   *     - "75"
    *   "device_id": The ID of the device to use when setting 'htp_arch'. Defaults to "0" (for single device).
    *   "enable_htp_fp16_precision": Used for float32 model for HTP backend.
    *      Enable the float32 model to be inferenced with fp16 precision. Otherwise, it will be fp32 precision.

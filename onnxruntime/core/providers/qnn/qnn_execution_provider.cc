@@ -448,6 +448,13 @@ QNNExecutionProvider::QNNExecutionProvider(const ProviderOptions& provider_optio
     }
   }
 
+  static const std::string QNN_CUSTOM_OP_PACKAGE = "op_pack_path";
+  auto op_pack_path_pos = provider_options_map.find(QNN_CUSTOM_OP_PACKAGE);
+  if (op_pack_path_pos != provider_options_map.end()) {
+    op_pack_path_ = op_pack_path_pos->second;
+    LOGS_DEFAULT(VERBOSE) << "Custom op package path: " << op_pack_path_;
+  }
+
   dump_json_qnn_graph_ = ParseBoolOption("dump_json_qnn_graph", false, provider_options_map);
 
   static const std::string QNN_GRAPH_DUMP_DIR = "json_qnn_graph_dir";
@@ -473,16 +480,17 @@ QNNExecutionProvider::QNNExecutionProvider(const ProviderOptions& provider_optio
     }
   } else {
     qnn_backend_manager_ = qnn::QnnBackendManager::Create(
-        qnn::QnnBackendManagerConfig{backend_path,
-                                     profiling_level_etw,
-                                     profiling_level,
-                                     profiling_file_path,
-                                     context_priority,
-                                     qnn_saver_path,
-                                     device_id_,
-                                     htp_arch,
-                                     soc_model});
-  }
+      qnn::QnnBackendManagerConfig{backend_path,
+                                  op_pack_path_,
+                                   profiling_level_etw,
+                                   profiling_level,
+                                   profiling_file_path,
+                                   context_priority,
+                                   qnn_saver_path,
+                                   device_id_,
+                                   htp_arch,
+                                   soc_model,
+                                   enable_htp_weight_sharing});
 
 #if defined(_WIN32)
   if (onnxruntime::logging::EtwRegistrationManager::SupportsETW()) {
