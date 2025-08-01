@@ -71,16 +71,8 @@ Status MatMulNBitsOpBuilder::ProcessInputs(QnnModelWrapper& qnn_model_wrapper, c
       ORT_RETURN_IF_ERROR(qnn_model_wrapper.MakeTensorWrapper(tensor_info, actual_input_name, tensor_wrapper));
       ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(tensor_wrapper)),
                         "Failed to add tensor: " + actual_input_name);
-
-      if ((actual_input_name == "B" || actual_input_name == "zero_points") &&
-          tensor_info.qnn_data_type == QNN_DATATYPE_UINT_8) {
-        std::string casted_name = actual_input_name + "_casted_int32";
-        LOGS(logger, INFO) << "Casting tensor " << actual_input_name << " to int32 as " << casted_name;
-
-        ORT_RETURN_IF_ERROR(qnn_model_wrapper.CastStaticTensorToInt32(actual_input_name, casted_name, logger));
-        actual_input_name = casted_name;
-      }
-    } else {
+    }
+    else {
       LOGS(logger, VERBOSE) << "Tensor already added, skip it: " << actual_input_name;
     }
 
@@ -191,7 +183,7 @@ Status MatMulNBitsOpBuilder::ProcessAttributesAndOutputs(QnnModelWrapper& qnn_mo
   // Step 8: Create the fused QNN node
   ORT_RETURN_IF_NOT(qnn_model_wrapper.CreateQnnNode(
                         name,
-                        package_name,
+                        QNN_OP_PACKAGE_NAME_QTI_AISW,
                         op_type,
                         std::move(input_names),
                         {output_name},
