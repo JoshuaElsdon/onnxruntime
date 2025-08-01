@@ -67,14 +67,6 @@ Status MatMulNBitsOpBuilder::ProcessInputs(QnnModelWrapper& qnn_model_wrapper, c
       TensorInfo tensor_info;
       ORT_RETURN_IF_ERROR(qnn_model_wrapper.GetTensorInfo(input_def, tensor_info));
 
-      // Patch dummy quantization if needed (e.g., for B or zero_points)
-      if (actual_input_name == "B" || actual_input_name == "zero_points") {
-        Qnn_QuantizeParams_t dummy_qparams = QNN_QUANTIZE_PARAMS_INIT;
-        dummy_qparams.encodingDefinition = QNN_DEFINITION_UNDEFINED;
-        dummy_qparams.quantizationEncoding = QNN_QUANTIZATION_ENCODING_UNDEFINED;
-        ORT_THROW_IF_ERROR(tensor_info.quant_param.Init(dummy_qparams));
-      }
-
       QnnTensorWrapper tensor_wrapper;
       ORT_RETURN_IF_ERROR(qnn_model_wrapper.MakeTensorWrapper(tensor_info, actual_input_name, tensor_wrapper));
       ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(tensor_wrapper)),
@@ -85,7 +77,7 @@ Status MatMulNBitsOpBuilder::ProcessInputs(QnnModelWrapper& qnn_model_wrapper, c
         std::string casted_name = actual_input_name + "_casted_int32";
         LOGS(logger, INFO) << "Casting tensor " << actual_input_name << " to int32 as " << casted_name;
 
-        ORT_RETURN_IF_ERROR(qnn_model_wrapper.CastStaticTensorToInt32(actual_input_name, casted_name));
+        ORT_RETURN_IF_ERROR(qnn_model_wrapper.CastStaticTensorToInt32(actual_input_name, casted_name, logger));
         actual_input_name = casted_name;
       }
     } else {
