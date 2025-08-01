@@ -64,6 +64,14 @@ std::unique_ptr<IQnnNodeGroup> MatMulNBitsQDQFusion::TryFusion(
     LOGS(logger, INFO) << "MatMulNBitsQDQFusion::TryFusion() scale_dq_node_unit is not nullptr.";
   }
 
+  // make sure the input_dq_unit and the scale_dq_node_unit are not the same node.
+  if (input_dq_unit.GetNode().Index() == scale_dq_node_unit->GetNode().Index()) {
+    LOGS(logger, INFO) << "MatMulNBitsQDQFusion::TryFusion() input_dq_unit and scale_dq_node_unit are the same node.";
+    return nullptr;
+  } else {
+    LOGS(logger, INFO) << "MatMulNBitsQDQFusion::TryFusion() input_dq_unit and scale_dq_node_unit are not the same node.";
+  }
+
   // the matmul_nbits must have a single QuantizeLinear as output (1 output edge) and must not produce a graph output.
   const std::array<std::string_view, 1> output_types = {"QuantizeLinear"};
   const NodeUnit* output_q_node_unit = GetOnlyChildOfType(graph_viewer, *matmul_n_bits_node_unit, output_types,
