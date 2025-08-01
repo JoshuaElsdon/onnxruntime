@@ -427,9 +427,21 @@ static Status CreateOrValidateOnQnn(QnnModelWrapper& qnn_model_wrapper,
       }
     }
 
+    if (min_weight > 0.0f)
+    {
+      min_weight = 0.0f;  // Ensure min_weight is not greater than 0
+    }
+    if (max_weight < 0.0f)
+    {
+      max_weight = 0.0f;  // Ensure max_weight is not less than 0
+    }
+    if (min_weight == max_weight) {
+      max_weight += 0.00001f;
+    }
+
     // convert these to a scale and offset for a 8 bit unsigned fixed point representation
     float scale = (max_weight - min_weight) / 255.0f;  // Scale for 8-bit unsigned fixed point
-    int32_t offset = - static_cast<int32_t>(std::round(-min_weight / scale)); 
+    int32_t offset =  -static_cast<int32_t>(std::round(-min_weight / scale)); 
 
     LOGS(logger, INFO) << "Scale: " << scale << ", Offset: " << offset;
 
