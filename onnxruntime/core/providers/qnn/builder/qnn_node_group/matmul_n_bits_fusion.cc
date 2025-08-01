@@ -343,22 +343,39 @@ static Status CreateOrValidateOnQnn(QnnModelWrapper& qnn_model_wrapper,
     }
 
     if (input_defs.size() >= 2) {
-        const NodeArg* scale_tensor_arg = input_defs[1];  // the "scale" input
-        const ONNX_NAMESPACE::TensorProto* scale_initializer = nullptr;
-        if (qnn_model_wrapper.GetGraphViewer().GetInitializedTensor(scale_tensor_arg->Name(), scale_initializer)) {
-          LOGS(logger, INFO) << "Found scale scale initializer: " << scale_initializer->name();
-            PrintTensorProto(scale_initializer);
-            float scale_val = 1.0f;
-            if (scale_initializer->has_raw_data()) {
-                scale_val = *reinterpret_cast<const float*>(scale_initializer->raw_data().data());
-            } else {
-                LOGS(logger, ERROR) << "Scale tensor does not have raw data.";
-                float data = scale_initializer->float_data(0);
-                LOGS(logger, INFO) << "Using float_data: " << data;
-                scale_val = data;
-            }
-            LOGS(logger, INFO) << "Scale value: " << scale_val;
+      const NodeArg* scale_tensor_arg = input_defs[1];  // the "scale" input
+      const ONNX_NAMESPACE::TensorProto* scale_initializer = nullptr;
+      if (qnn_model_wrapper.GetGraphViewer().GetInitializedTensor(scale_tensor_arg->Name(), scale_initializer)) {
+        LOGS(logger, INFO) << "Found scale scale initializer: " << scale_initializer->name();
+        PrintTensorProto(scale_initializer);
+        float scale_val = 1.0f;
+        if (scale_initializer->has_raw_data()) {
+          scale_val = *reinterpret_cast<const float*>(scale_initializer->raw_data().data());
+        } else {
+          float data = scale_initializer->float_data(0);
+          LOGS(logger, INFO) << "Using float_data: " << data;
+          scale_val = data;
         }
+        LOGS(logger, INFO) << "Scale value: " << scale_val;
+      }
+    }
+    if (input_defs.size() >= 3) {
+      const NodeArg* zero_tensor_arg = input_defs[2];  // the "zeros" input
+      const ONNX_NAMESPACE::TensorProto* zero_initializer = nullptr;
+      if (qnn_model_wrapper.GetGraphViewer().GetInitializedTensor(zero_tensor_arg->Name(), zero_initializer)) {
+        LOGS(logger, INFO) << "Found zeros initializer: " << zero_initializer->name();
+        PrintTensorProto(zero_initializer);
+        int32_t zero_val = 100;
+        if (zero_initializer->has_raw_data()) {
+          zero_val = *reinterpret_cast<const float*>(zero_initializer->raw_data().data());
+        } else {
+          LOGS(logger, INFO) << "Using uint16_data:";
+          int32_t data = zero_initializer->int32_data(0);
+          LOGS(logger, INFO) << "Using uint16_data: " << data;
+          zero_val = data;
+        }
+        LOGS(logger, INFO) << "Zero value: " << zero_val;
+      }
     }
 
     // unpack the B tensor as 2 bit values
