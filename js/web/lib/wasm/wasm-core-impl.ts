@@ -6,7 +6,7 @@
 // https://github.com/webmachinelearning/webnn/issues/677
 /// <reference path="jsep/webnn/webnn.d.ts" />
 
-import { Env, InferenceSession, Tensor } from 'onnxruntime-common';
+import { Env, InferenceSession, Tensor, TRACE_EVENT_BEGIN, TRACE_EVENT_END } from 'onnxruntime-common';
 
 import {
   SerializableInternalBuffer,
@@ -105,64 +105,88 @@ export const initEp = async (env: Env, epName: string): Promise<void> => {
   // initialize ASYNCIFY support
   getInstance().asyncInit?.();
 
-  if (epName === 'webgpu' && BUILD_DEFS.USE_WEBGPU_EP) {
-    getInstance().webgpuInit!((device) => {
-      env.webgpu.device = device;
-    });
+  // perform WebGPU availability check ( either JSEP or WebGPU EP )
+  let webgpuAdapter = env.webgpu.adapter as GPUAdapter | null;
+  if (epName === 'webgpu') {
+    if (typeof navigator === 'undefined' || !navigator.gpu) {
+      throw new Error('WebGPU is not supported in current environment');
+    }
+    if (!webgpuAdapter) {
+      // if adapter is not set, request a new adapter.
+      const powerPreference = env.webgpu.powerPreference;
+      if (powerPreference !== undefined && powerPreference !== 'low-power' && powerPreference !== 'high-performance') {
+        throw new Error(`Invalid powerPreference setting: "${powerPreference}"`);
+      }
+      const forceFallbackAdapter = env.webgpu.forceFallbackAdapter;
+      if (forceFallbackAdapter !== undefined && typeof forceFallbackAdapter !== 'boolean') {
+        throw new Error(`Invalid forceFallbackAdapter setting: "${forceFallbackAdapter}"`);
+      }
+      webgpuAdapter = await navigator.gpu.requestAdapter({ powerPreference, forceFallbackAdapter });
+      if (!webgpuAdapter) {
+        throw new Error(
+          'Failed to get GPU adapter. ' +
+            'You may need to enable flag "--enable-unsafe-webgpu" if you are using Chrome.',
+        );
+      }
+    } else {
+      // if adapter is set, validate it.
+      if (
+        typeof webgpuAdapter.limits !== 'object' ||
+        typeof webgpuAdapter.features !== 'object' ||
+        typeof webgpuAdapter.requestDevice !== 'function'
+      ) {
+        throw new Error('Invalid GPU adapter set in `env.webgpu.adapter`. It must be a GPUAdapter object.');
+      }
+    }
+  }
+
+  // perform WebNN availability check ( either JSEP or WebNN EP )
+  if (epName === 'webnn') {
+    if (typeof navigator === 'undefined' || !(navigator as unknown as { ml: unknown }).ml) {
+      throw new Error('WebNN is not supported in current environment');
+    }
   }
 
   if (!BUILD_DEFS.DISABLE_JSEP) {
     // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires
     const initJsep = require('./jsep/init').init;
 
-    if (epName === 'webgpu' && !BUILD_DEFS.USE_WEBGPU_EP) {
-      // perform WebGPU availability check
-      if (typeof navigator === 'undefined' || !navigator.gpu) {
-        throw new Error('WebGPU is not supported in current environment');
-      }
-
-      let adapter = env.webgpu.adapter as GPUAdapter | null;
-      if (!adapter) {
-        // if adapter is not set, request a new adapter.
-        const powerPreference = env.webgpu.powerPreference;
-        if (
-          powerPreference !== undefined &&
-          powerPreference !== 'low-power' &&
-          powerPreference !== 'high-performance'
-        ) {
-          throw new Error(`Invalid powerPreference setting: "${powerPreference}"`);
-        }
-        const forceFallbackAdapter = env.webgpu.forceFallbackAdapter;
-        if (forceFallbackAdapter !== undefined && typeof forceFallbackAdapter !== 'boolean') {
-          throw new Error(`Invalid forceFallbackAdapter setting: "${forceFallbackAdapter}"`);
-        }
-        adapter = await navigator.gpu.requestAdapter({ powerPreference, forceFallbackAdapter });
-        if (!adapter) {
-          throw new Error(
-            'Failed to get GPU adapter. ' +
-              'You may need to enable flag "--enable-unsafe-webgpu" if you are using Chrome.',
-          );
-        }
-      } else {
-        // if adapter is set, validate it.
-        if (
-          typeof adapter.limits !== 'object' ||
-          typeof adapter.features !== 'object' ||
-          typeof adapter.requestDevice !== 'function'
-        ) {
-          throw new Error('Invalid GPU adapter set in `env.webgpu.adapter`. It must be a GPUAdapter object.');
-        }
-      }
-
-      await initJsep('webgpu', getInstance(), env, adapter);
+    if (epName === 'webgpu') {
+      await initJsep('webgpu', getInstance(), env, webgpuAdapter);
     }
     if (epName === 'webnn') {
-      // perform WebNN availability check
-      if (typeof navigator === 'undefined' || !(navigator as unknown as { ml: unknown }).ml) {
-        throw new Error('WebNN is not supported in current environment');
-      }
-
       await initJsep('webnn', getInstance(), env);
+    }
+  } else {
+    if (!BUILD_DEFS.DISABLE_WEBGPU && epName === 'webgpu') {
+      getInstance().webgpuInit!((device) => {
+        env.webgpu.device = device;
+      });
+    }
+    if (!BUILD_DEFS.DISABLE_WEBNN && epName === 'webnn') {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires
+      const backend = new (require('./jsep/backend-webnn').WebNNBackend)(env);
+      getInstance().webnnInit!([
+        backend,
+        // webnnReserveTensorId
+        () => backend.reserveTensorId(),
+        // webnnReleaseTensorId,
+        (tensorId: number) => backend.releaseTensorId(tensorId),
+        // webnnEnsureTensor
+        async (sessionId: number | undefined, tensorId: number, onnxDataType: number, shape: number[], copyOld) =>
+          backend.ensureTensor(sessionId, tensorId, onnxDataType, shape, copyOld),
+        // webnnUploadTensor
+        (tensorId: number, data: Uint8Array) => {
+          backend.uploadTensor(tensorId, data);
+        },
+        // webnnDownloadTensor
+        async (tensorId: number, dstBuffer: ArrayBufferView | ArrayBuffer) =>
+          backend.downloadTensor(tensorId, dstBuffer),
+        // webnnRegisterMLContext
+        (sessionId: number, mlContext: MLContext) => backend.registerMLContext(sessionId, mlContext),
+        // webnnEnableTraceEvent
+        !!env.trace,
+      ]);
     }
   }
 };
@@ -421,7 +445,7 @@ export const createSession = async (
           : { name: nameString, isTensor: true, type: tensorDataTypeEnumToString(elementType), shape: shape! },
       );
 
-      if (!BUILD_DEFS.DISABLE_JSEP) {
+      if (!BUILD_DEFS.DISABLE_JSEP || !BUILD_DEFS.DISABLE_WEBGPU) {
         if (enableGraphCapture && options?.preferredOutputLocation === undefined) {
           outputPreferredLocations.push('gpu-buffer');
           continue;
@@ -450,7 +474,7 @@ export const createSession = async (
     // use IO binding only when at least one output is preferred to be on GPU.
     let bindingState: IOBindingState | null = null;
     if (
-      !BUILD_DEFS.DISABLE_JSEP &&
+      (!BUILD_DEFS.DISABLE_JSEP || !BUILD_DEFS.DISABLE_WEBGPU) &&
       outputPreferredLocations.some((l) => l === 'gpu-buffer' || l === 'ml-tensor' || l === 'ml-tensor-cpu-output')
     ) {
       ioBindingHandle = wasm._OrtCreateBinding(sessionHandle);
@@ -577,7 +601,7 @@ export const prepareInputOutputTensor = async (
     const gpuBuffer = tensor[2].gpuBuffer;
     dataByteLength = calculateTensorSizeInBytes(tensorDataTypeStringToEnum(dataType), dims)!;
 
-    if (BUILD_DEFS.USE_WEBGPU_EP) {
+    if (!BUILD_DEFS.DISABLE_WEBGPU) {
       const registerBuffer = wasm.webgpuRegisterBuffer;
       if (!registerBuffer) {
         throw new Error('Tensor location "gpu-buffer" is not supported without using WebGPU.');
@@ -711,6 +735,7 @@ export const run = async (
   try {
     [runOptionsHandle, runOptionsAllocs] = setRunOptions(options);
 
+    TRACE_EVENT_BEGIN('wasm prepareInputOutputTensor');
     // create input tensors
     for (let i = 0; i < inputCount; i++) {
       await prepareInputOutputTensor(
@@ -736,6 +761,7 @@ export const run = async (
         enableGraphCapture,
       );
     }
+    TRACE_EVENT_END('wasm prepareInputOutputTensor');
 
     for (let i = 0; i < inputCount; i++) {
       wasm.setValue(inputValuesOffset + i * ptrSize, inputTensorHandles[i], '*');
@@ -746,7 +772,7 @@ export const run = async (
       wasm.setValue(outputNamesOffset + i * ptrSize, outputNamesUTF8Encoded[outputIndices[i]], '*');
     }
 
-    if (!BUILD_DEFS.DISABLE_JSEP && ioBindingState && !inputOutputBound) {
+    if ((!BUILD_DEFS.DISABLE_JSEP || !BUILD_DEFS.DISABLE_WEBGPU) && ioBindingState && !inputOutputBound) {
       const { handle, outputPreferredLocations, outputPreferredLocationsEncoded } = ioBindingState;
 
       if (inputNamesUTF8Encoded.length !== inputCount) {
@@ -755,6 +781,7 @@ export const run = async (
         );
       }
 
+      TRACE_EVENT_BEGIN('wasm bindInputsOutputs');
       // process inputs
       for (let i = 0; i < inputCount; i++) {
         const index = inputIndices[i];
@@ -788,6 +815,7 @@ export const run = async (
           }
         }
       }
+      TRACE_EVENT_END('wasm bindInputsOutputs');
       activeSessions.set(sessionId, [
         sessionHandle,
         inputNamesUTF8Encoded,
@@ -802,7 +830,7 @@ export const run = async (
     wasm.webnnOnRunStart?.(sessionHandle);
 
     let errorCode: number;
-    if (!BUILD_DEFS.DISABLE_JSEP && ioBindingState) {
+    if ((!BUILD_DEFS.DISABLE_JSEP || !BUILD_DEFS.DISABLE_WEBGPU) && ioBindingState) {
       errorCode = await wasm._OrtRunWithBinding(
         sessionHandle,
         ioBindingState.handle,
@@ -830,6 +858,7 @@ export const run = async (
     const output: TensorMetadata[] = [];
     const outputPromises: Array<Promise<[number, Tensor.DataType]>> = [];
 
+    TRACE_EVENT_BEGIN('wasm ProcessOutputTensor');
     for (let i = 0; i < outputCount; i++) {
       const tensor = Number(wasm.getValue(outputValuesOffset + i * ptrSize, '*'));
       if (tensor === outputTensorHandles[i]) {
@@ -890,7 +919,7 @@ export const run = async (
           // If a certain output's preferred location is GPU but the tensor is empty, we still need to create a CPU
           // tensor for it. There is no mapping GPU buffer for an empty tensor.
           if (preferredLocation === 'gpu-buffer' && size > 0) {
-            const getBuffer = BUILD_DEFS.USE_WEBGPU_EP ? wasm.webgpuGetBuffer : wasm.jsepGetBuffer;
+            const getBuffer = !BUILD_DEFS.DISABLE_WEBGPU ? wasm.webgpuGetBuffer : wasm.jsepGetBuffer;
             if (!getBuffer) {
               throw new Error('preferredLocation "gpu-buffer" is not supported without using WebGPU.');
             }
@@ -903,7 +932,7 @@ export const run = async (
             // do not release the tensor right now. it will be released when user calls tensor.dispose().
             keepOutputTensor = true;
 
-            if (BUILD_DEFS.USE_WEBGPU_EP) {
+            if (!BUILD_DEFS.DISABLE_WEBGPU) {
               wasm.webgpuRegisterBuffer!(gpuBuffer, sessionId, dataOffset);
               const downloadDataFunction = wasm.webgpuCreateDownloader!(gpuBuffer, bufferSize, sessionId);
               output.push([
@@ -1028,13 +1057,14 @@ export const run = async (
     for (const [index, data] of await Promise.all(outputPromises)) {
       output[index][2] = data;
     }
+    TRACE_EVENT_END('wasm ProcessOutputTensor');
     return output;
   } finally {
     wasm.webnnOnRunEnd?.(sessionHandle);
 
     wasm.stackRestore(beforeRunStack);
 
-    if (BUILD_DEFS.USE_WEBGPU_EP) {
+    if (!BUILD_DEFS.DISABLE_WEBGPU) {
       inputTensors.forEach((t) => {
         if (t && t[3] === 'gpu-buffer') {
           wasm.webgpuUnregisterBuffer!(t[2].gpuBuffer);

@@ -529,8 +529,11 @@ Status ExecutionFrame::AllocateMLValueTensorSelfOwnBufferHelper(OrtValue& ort_va
     return Status(ONNXRUNTIME, FAIL, "Trying to allocate memory for unused optional inputs/outputs");
   }
 
+  // This alignment is used to properly space out individual chunks in mempatterns memory buffer.
+  const auto alignment = std::max(location.GetAlignment(), kAllocAlignment);
+
   size_t size = 0;
-  ORT_RETURN_IF_ERROR(Tensor::CalculateTensorStorageSize(element_type, shape, kAllocAlignment, size));
+  ORT_RETURN_IF_ERROR(Tensor::CalculateTensorStorageSize(element_type, shape, alignment, size));
 
   // Lazily get the allocator only if needed.
   AllocatorPtr alloc = nullptr;
@@ -583,7 +586,7 @@ Status ExecutionFrame::AllocateMLValueTensorSelfOwnBufferHelper(OrtValue& ort_va
       size_t buffer_size = Tensor::CalculateTensorStorageSize(element_type, shape);
       // the reused memory must from same EP
       auto wait_handle = this->session_state_.GetStreamHandleRegistryInstance().GetWaitHandle(
-          current_stream->GetDevice().Type(), current_stream->GetDevice().Type());
+          current_stream->GetDevice(), current_stream->GetDevice());
       void* p_data = stream_aware_alloc->AllocOnStream(buffer_size, current_stream, wait_handle);
       Tensor::InitOrtValue(element_type, shape, p_data, std::move(alloc), ort_value);
     } else {

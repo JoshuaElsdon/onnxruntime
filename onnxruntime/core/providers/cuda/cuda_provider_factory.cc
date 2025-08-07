@@ -84,8 +84,8 @@ struct ProviderInfo_CUDA_Impl final : ProviderInfo_CUDA {
     return std::make_unique<CUDAAllocator>(device_id, name);
   }
 
-  std::unique_ptr<IAllocator> CreateCUDAPinnedAllocator(const char* name) override {
-    return std::make_unique<CUDAPinnedAllocator>(name);
+  std::unique_ptr<IAllocator> CreateCUDAPinnedAllocator(int16_t device_id, const char* name) override {
+    return std::make_unique<CUDAPinnedAllocator>(device_id, name);
   }
 
   std::unique_ptr<IDataTransfer> CreateGPUDataTransfer() override {
@@ -112,15 +112,15 @@ struct ProviderInfo_CUDA_Impl final : ProviderInfo_CUDA {
   void CudaCall_true(int retCode, const char* exprString, const char* libName, int successCode, const char* msg, const char* file, const int line) override { CudaCall<cudaError, true>(cudaError(retCode), exprString, libName, cudaError(successCode), msg, file, line); }
 
   void CopyGpuToCpu(void* dst_ptr, const void* src_ptr, const size_t size, const OrtMemoryInfo& dst_location, const OrtMemoryInfo& src_location) override {
-    ORT_ENFORCE(dst_location.device.Type() == OrtDevice::CPU);
+    ORT_ENFORCE(dst_location.device.UsesCpuMemory(), "Copy destination is not CPU memory");
 
     // Current CUDA device.
     int device;
     CUDA_CALL_THROW(cudaGetDevice(&device));
 
-    if (device != src_location.id) {
+    if (device != src_location.device.Id()) {
       // Need to switch to the allocating device.
-      CUDA_CALL_THROW(cudaSetDevice(src_location.id));
+      CUDA_CALL_THROW(cudaSetDevice(src_location.device.Id()));
       // Copy from GPU to CPU.
       CUDA_CALL_THROW(cudaMemcpy(dst_ptr, src_ptr, size, cudaMemcpyDeviceToHost));
       // Switch back to current device.
@@ -308,39 +308,53 @@ CUDA_Provider* GetProvider() {
 }  // namespace onnxruntime
 
 #include "core/framework/error_code_helper.h"
+#include "onnxruntime_config.h"  // for ORT_VERSION
 
 // OrtEpApi infrastructure to be able to use the CUDA EP as an OrtEpFactory for auto EP selection.
 struct CudaEpFactory : OrtEpFactory {
   CudaEpFactory(const OrtApi& ort_api_in) : ort_api{ort_api_in} {
     GetName = GetNameImpl;
     GetVendor = GetVendorImpl;
-    GetDeviceInfoIfSupported = GetDeviceInfoIfSupportedImpl;
+    GetVersion = GetVersionImpl;
+    GetSupportedDevices = GetSupportedDevicesImpl;
     CreateEp = CreateEpImpl;
     ReleaseEp = ReleaseEpImpl;
   }
 
-  static const char* GetNameImpl(const OrtEpFactory* this_ptr) {
+  static const char* GetNameImpl(const OrtEpFactory* this_ptr) noexcept {
     const auto* factory = static_cast<const CudaEpFactory*>(this_ptr);
     return factory->ep_name.c_str();
   }
 
-  static const char* GetVendorImpl(const OrtEpFactory* this_ptr) {
+  static const char* GetVendorImpl(const OrtEpFactory* this_ptr) noexcept {
     const auto* factory = static_cast<const CudaEpFactory*>(this_ptr);
     return factory->vendor.c_str();
   }
 
-  static bool GetDeviceInfoIfSupportedImpl(const OrtEpFactory* this_ptr,
-                                           const OrtHardwareDevice* device,
-                                           _Out_opt_ OrtKeyValuePairs** /*ep_metadata*/,
-                                           _Out_opt_ OrtKeyValuePairs** /*ep_options*/) {
-    const auto* factory = static_cast<const CudaEpFactory*>(this_ptr);
+  static const char* ORT_API_CALL GetVersionImpl(const OrtEpFactory* /*this_ptr*/) noexcept {
+    return ORT_VERSION;
+  }
 
-    if (factory->ort_api.HardwareDevice_Type(device) == OrtHardwareDeviceType::OrtHardwareDeviceType_GPU &&
-        factory->ort_api.HardwareDevice_VendorId(device) == 0x10de) {
-      return true;
+  static OrtStatus* GetSupportedDevicesImpl(OrtEpFactory* this_ptr,
+                                            const OrtHardwareDevice* const* devices,
+                                            size_t num_devices,
+                                            OrtEpDevice** ep_devices,
+                                            size_t max_ep_devices,
+                                            size_t* p_num_ep_devices) noexcept {
+    size_t& num_ep_devices = *p_num_ep_devices;
+    auto* factory = static_cast<CudaEpFactory*>(this_ptr);
+
+    for (size_t i = 0; i < num_devices && num_ep_devices < max_ep_devices; ++i) {
+      const OrtHardwareDevice& device = *devices[i];
+      if (factory->ort_api.HardwareDevice_Type(&device) == OrtHardwareDeviceType::OrtHardwareDeviceType_GPU &&
+          factory->ort_api.HardwareDevice_VendorId(&device) == 0x10de) {
+        ORT_API_RETURN_IF_ERROR(
+            factory->ort_api.GetEpApi()->CreateEpDevice(factory, &device, nullptr, nullptr,
+                                                        &ep_devices[num_ep_devices++]));
+      }
     }
 
-    return false;
+    return nullptr;
   }
 
   static OrtStatus* CreateEpImpl(OrtEpFactory* /*this_ptr*/,
@@ -349,11 +363,11 @@ struct CudaEpFactory : OrtEpFactory {
                                  _In_ size_t /*num_devices*/,
                                  _In_ const OrtSessionOptions* /*session_options*/,
                                  _In_ const OrtLogger* /*logger*/,
-                                 _Out_ OrtEp** /*ep*/) {
+                                 _Out_ OrtEp** /*ep*/) noexcept {
     return CreateStatus(ORT_INVALID_ARGUMENT, "CUDA EP factory does not support this method.");
   }
 
-  static void ReleaseEpImpl(OrtEpFactory* /*this_ptr*/, OrtEp* /*ep*/) {
+  static void ReleaseEpImpl(OrtEpFactory* /*this_ptr*/, OrtEp* /*ep*/) noexcept {
     // no-op as we never create an EP here.
   }
 
@@ -385,7 +399,7 @@ OrtStatus* CreateEpFactories(const char* /*registration_name*/, const OrtApiBase
 }
 
 OrtStatus* ReleaseEpFactory(OrtEpFactory* factory) {
-  delete factory;
+  delete static_cast<CudaEpFactory*>(factory);
   return nullptr;
 }
 }

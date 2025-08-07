@@ -1020,6 +1020,7 @@ MlasComputeSoftmax(
     size_t D,
     bool LogSoftmax,
     bool SmoothSoftmax,
+    float Sink,
     MLAS_THREADPOOL* ThreadPool
     );
 
@@ -1223,6 +1224,21 @@ MlasQuantizeLinearS4(
     int8_t ZeroPoint
     );
 
+//
+// Linear dequantization routines.
+//
+
+template<typename InputType>
+void
+MLASCALL
+MlasDequantizeLinear(
+    const InputType* Input,
+    float* Output,
+    size_t N,
+    float Scale,
+    InputType ZeroPoint
+    );
+
 /**
  * @brief Requantize a block of the intermediate buffer to the output buffer,
  *        optionally adding the supplied bias
@@ -1417,6 +1433,17 @@ MlasConvertHalfToFloatBuffer(
     const MLAS_FP16* Source,
     float* Destination,
     size_t Count
+);
+
+#define MLAS_MIN_TENSOR_SIZE_FOR_HALF_TO_FLOAT_CONVERSION_IN_PARALLEL 128000
+
+void
+MLASCALL
+MlasConvertHalfToFloatBufferInParallel(
+    const MLAS_FP16* Source,
+    float* Destination,
+    size_t Count,
+    MLAS_THREADPOOL* ThreadPool
 );
 
 void

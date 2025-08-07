@@ -18,6 +18,7 @@ Abstract:
 #pragma once
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <functional>
 #include <limits>
@@ -260,6 +261,22 @@ struct MLFloat16 {
     MLFloat16() = default;
     explicit constexpr MLFloat16(uint16_t x) : val(x) {}
     explicit MLFloat16(float ff) : val(MLAS_Float2Half(ff)) {}
+    constexpr static MLFloat16 FromBits(uint16_t x) noexcept { return MLFloat16(x); }
+
+    MLFloat16 Abs() const noexcept {
+        return MLFloat16(static_cast<uint16_t>(val & ~kSignMask));
+    }
+    bool IsNaN() const noexcept {
+        return Abs().val > kPositiveInfinityBits;
+    }
+    bool IsNegative() const noexcept {
+        return static_cast<int16_t>(val) < 0;
+    }
+    MLFloat16 Negate() const {
+        return MLFloat16(IsNaN() ? val : static_cast<uint16_t>(val ^ kSignMask));
+    }
+    static constexpr uint16_t kSignMask = 0x8000U;
+    static constexpr uint16_t kPositiveInfinityBits = 0x7C00U;
 
     float ToFloat() const { return MLAS_Half2Float(val); }
 
@@ -730,6 +747,24 @@ void
     float Scale,
     int8_t ZeroPoint);
 
+typedef
+void
+(MLASCALL MLAS_DEQUANTIZE_LINEAR_U8_KERNEL)(
+    const uint8_t* Input,
+    float* Output,
+    size_t N,
+    float Scale,
+    uint8_t ZeroPoint);
+
+typedef
+void
+(MLASCALL MLAS_DEQUANTIZE_LINEAR_S8_KERNEL)(
+    const int8_t* Input,
+    float* Output,
+    size_t N,
+    float Scale,
+    int8_t ZeroPoint);
+
 template<typename InputType, typename FilterType>
 struct MLAS_QUANT_KERNEL
 {
@@ -886,6 +921,8 @@ extern "C" {
     MLAS_QUANTIZE_LINEAR_S4_KERNEL MlasQuantizeLinearS4Kernel;
     MLAS_QUANTIZE_LINEAR_U4_KERNEL MlasQuantizeLinearU4Kernel;
 #if defined(MLAS_TARGET_AMD64)
+    MLAS_DEQUANTIZE_LINEAR_S8_KERNEL MlasDequantizeLinearS8Kernel;
+    MLAS_DEQUANTIZE_LINEAR_U8_KERNEL MlasDequantizeLinearU8Kernel;
     MLAS_COMPUTE_UNARY_FLOAT_KERNEL MlasErfKernelFma3;
     MLAS_COMPUTE_UNARY_FLOAT_KERNEL MlasComputeExpF32KernelFma3;
     MLAS_COMPUTE_UNARY_FLOAT_KERNEL MlasComputeExpF32KernelAvx512F;
@@ -1231,6 +1268,8 @@ struct MLAS_PLATFORM {
     MLAS_QUANTIZE_LINEAR_U16_KERNEL* QuantizeLinearU16Kernel;
     MLAS_QUANTIZE_LINEAR_S4_KERNEL* QuantizeLinearS4Kernel;
     MLAS_QUANTIZE_LINEAR_U4_KERNEL* QuantizeLinearU4Kernel;
+    MLAS_DEQUANTIZE_LINEAR_S8_KERNEL* DequantizeLinearS8Kernel;
+    MLAS_DEQUANTIZE_LINEAR_U8_KERNEL* DequantizeLinearU8Kernel;
     uint32_t NchwcBlockSize;
     uint32_t PreferredBufferAlignment;
     int32_t MaximumThreadCount;

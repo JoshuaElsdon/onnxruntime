@@ -79,7 +79,7 @@ Status DequantizeLinearProgram::GenerateShaderCode(ShaderHelper& shader) const {
       if (packed_) {
         shader.MainFunctionBody()
             << "let zero_point_index = " << output.IndicesGet("output_indices", "uniforms.axis") << ";\n"
-            << "let zero_point_input = " << zero_point.GetByOffset("zero_point_index / 4") << ";\n"
+            << "let zero_point_input = " << zero_point.GetByOffset("u32(zero_point_index / 4)") << ";\n"
             << "let zero_point_vec = " << unpack << ";\n"
             << "let zero_point_value = zero_point_vec[zero_point_index % 4];\n";
       } else {
@@ -92,7 +92,7 @@ Status DequantizeLinearProgram::GenerateShaderCode(ShaderHelper& shader) const {
       if (packed_) {
         shader.MainFunctionBody()
             << "let zero_point_offset = " << scale.GetByIndices("scale_indices") << ";\n"
-            << "let zero_point_input = " << zero_point.GetByOffset("zero_point_offset / 4") << ";\n"
+            << "let zero_point_input = " << zero_point.GetByOffset("u32(zero_point_offset / 4)") << ";\n"
             << "let zero_point_vec = " << unpack << ";\n"
             << "let zero_point_value = zero_point_vec[zero_point_offset % 4];\n";
       } else {
@@ -129,9 +129,6 @@ Status DequantizeLinear::ComputeInternal(ComputeContext& context) const {
   int64_t axis = (axis_ >= 0) ? axis_ : axis_ + x_shape.NumDimensions();
 
   int max_components = GetMaxComponents(x_size);
-  if (max_components != 4) {
-    return ORT_MAKE_STATUS(ONNXRUNTIME, INVALID_ARGUMENT, "DequantizeLinear: components must be 4, but got ", max_components);
-  }
 
   // scaler - single scaler for all elements
   bool per_layer = x_scale_rank == 0 || (x_scale_rank == 1 && x_scale->Shape()[0] == 1);

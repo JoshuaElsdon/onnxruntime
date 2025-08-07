@@ -400,6 +400,11 @@ class ONNX_OPERATOR_VERSIONED_KERNEL_CLASS_NAME(kWebGpuExecutionProvider, kOnnxD
 class ONNX_OPERATOR_VERSIONED_KERNEL_CLASS_NAME(kWebGpuExecutionProvider, kOnnxDomain, 21, 22, DequantizeLinear);
 class ONNX_OPERATOR_KERNEL_CLASS_NAME(kWebGpuExecutionProvider, kOnnxDomain, 23, DequantizeLinear);
 
+class ONNX_OPERATOR_VERSIONED_KERNEL_CLASS_NAME(kWebGpuExecutionProvider, kOnnxDomain, 11, 12, ScatterND);
+class ONNX_OPERATOR_VERSIONED_KERNEL_CLASS_NAME(kWebGpuExecutionProvider, kOnnxDomain, 13, 15, ScatterND);
+class ONNX_OPERATOR_VERSIONED_KERNEL_CLASS_NAME(kWebGpuExecutionProvider, kOnnxDomain, 16, 17, ScatterND);
+class ONNX_OPERATOR_KERNEL_CLASS_NAME(kWebGpuExecutionProvider, kOnnxDomain, 18, ScatterND);
+
 std::unique_ptr<KernelRegistry> RegisterKernels() {
   auto kernel_registry = std::make_unique<onnxruntime::KernelRegistry>();
 
@@ -699,7 +704,7 @@ std::unique_ptr<KernelRegistry> RegisterKernels() {
       BuildKernelCreateInfo<ONNX_OPERATOR_TYPED_KERNEL_CLASS_NAME(kWebGpuExecutionProvider, kOnnxDomain, 11, float, Range)>,
       BuildKernelCreateInfo<ONNX_OPERATOR_TYPED_KERNEL_CLASS_NAME(kWebGpuExecutionProvider, kOnnxDomain, 11, int32_t, Range)>,
 
-      // BuildKernelCreateInfo<ONNX_OPERATOR_TYPED_KERNEL_CLASS_NAME(kWebGpuExecutionProvider, kOnnxDomain, 12, float, Einsum)>,
+      BuildKernelCreateInfo<ONNX_OPERATOR_TYPED_KERNEL_CLASS_NAME(kWebGpuExecutionProvider, kOnnxDomain, 12, float, Einsum)>,
 
       BuildKernelCreateInfo<ONNX_OPERATOR_VERSIONED_KERNEL_CLASS_NAME(kWebGpuExecutionProvider, kOnnxDomain, 2, 10, Pad)>,
       BuildKernelCreateInfo<ONNX_OPERATOR_VERSIONED_KERNEL_CLASS_NAME(kWebGpuExecutionProvider, kOnnxDomain, 11, 12, Pad)>,
@@ -732,6 +737,11 @@ std::unique_ptr<KernelRegistry> RegisterKernels() {
 
       BuildKernelCreateInfo<ONNX_OPERATOR_VERSIONED_KERNEL_CLASS_NAME(kWebGpuExecutionProvider, kOnnxDomain, 11, 13, CumSum)>,
       BuildKernelCreateInfo<ONNX_OPERATOR_KERNEL_CLASS_NAME(kWebGpuExecutionProvider, kOnnxDomain, 14, CumSum)>,
+
+      BuildKernelCreateInfo<ONNX_OPERATOR_VERSIONED_KERNEL_CLASS_NAME(kWebGpuExecutionProvider, kOnnxDomain, 11, 12, ScatterND)>,
+      BuildKernelCreateInfo<ONNX_OPERATOR_VERSIONED_KERNEL_CLASS_NAME(kWebGpuExecutionProvider, kOnnxDomain, 13, 15, ScatterND)>,
+      BuildKernelCreateInfo<ONNX_OPERATOR_VERSIONED_KERNEL_CLASS_NAME(kWebGpuExecutionProvider, kOnnxDomain, 16, 17, ScatterND)>,
+      BuildKernelCreateInfo<ONNX_OPERATOR_KERNEL_CLASS_NAME(kWebGpuExecutionProvider, kOnnxDomain, 18, ScatterND)>,
   };
 
   for (auto& function_table_entry : function_table) {
@@ -756,16 +766,27 @@ using namespace webgpu;
 WebGpuExecutionProvider::WebGpuExecutionProvider(int context_id,
                                                  WebGpuContext& context,
                                                  WebGpuExecutionProviderConfig&& config)
-    : IExecutionProvider{kWebGpuExecutionProvider, OrtDevice(OrtDevice::GPU, OrtDevice::MemType::DEFAULT, 0)},
+    : IExecutionProvider{kWebGpuExecutionProvider,
+                         OrtDevice(OrtDevice::GPU, OrtDevice::MemType::DEFAULT, OrtDevice::VendorIds::NONE, 0)},
       context_id_{context_id},
       context_{context},
       preferred_data_layout_{config.data_layout},
       force_cpu_node_names_{std::move(config.force_cpu_node_names)},
-      enable_graph_capture_{config.enable_graph_capture} {}
+      enable_graph_capture_{config.enable_graph_capture} {
+  // If graph capture is enabled, create a dedicated buffer manager for graph mode
+  if (enable_graph_capture_) {
+    // Create buffer manager for graph capture mode with appropriate cache modes
+    graph_buffer_mgr_ = webgpu::BufferManagerFactory::Create(
+        context_,
+        webgpu::BufferCacheMode::Graph,
+        webgpu::BufferCacheMode::GraphSimple,
+        webgpu::BufferCacheMode::Disabled);
+  }
+}
 
 std::vector<AllocatorPtr> WebGpuExecutionProvider::CreatePreferredAllocators() {
   AllocatorCreationInfo gpuBufferAllocatorCreationInfo([&](int) {
-    return std::make_unique<webgpu::GpuBufferAllocator>(context_);
+    return std::make_unique<webgpu::GpuBufferAllocator>(BufferManager());
   },
                                                        0, false);
   auto preferred_allocators = std::vector<AllocatorPtr>{CreateAllocator(gpuBufferAllocatorCreationInfo)};
@@ -835,7 +856,7 @@ std::shared_ptr<KernelRegistry> WebGpuExecutionProvider::GetKernelRegistry() con
 }
 
 std::unique_ptr<onnxruntime::IDataTransfer> WebGpuExecutionProvider::GetDataTransfer() const {
-  return std::make_unique<webgpu::DataTransfer>(context_);
+  return std::make_unique<webgpu::DataTransfer>(BufferManager());
 }
 
 #if defined(__wasm__)
@@ -844,7 +865,28 @@ std::unique_ptr<onnxruntime::IExternalDataLoader> WebGpuExecutionProvider::GetEx
 }
 #endif
 
+std::optional<bool> WebGpuExecutionProvider::ShouldConvertDataLayoutForOp(std::string_view node_domain,
+                                                                          std::string_view node_op_type,
+                                                                          DataLayout target_data_layout) const {
+  if (target_data_layout != DataLayout::NHWC) {
+    return std::nullopt;
+  }
+
+  // NHWC for Resize operator is not implemented on kWebGpuExecutionProvider
+  if (node_domain == kOnnxDomain && node_op_type == "Resize") {
+    return false;
+  }
+
+  return std::nullopt;
+}
+
 WebGpuExecutionProvider::~WebGpuExecutionProvider() {
+  // Release all resources associated with the captured graph
+  if (!captured_commands_.empty()) {
+    context_.ReleaseGraphResources(captured_commands_);
+  }
+  // The graph_buffer_mgr_ will be automatically cleaned up by unique_ptr
+
   WebGpuContextFactory::ReleaseContext(context_id_);
 }
 
@@ -871,22 +913,23 @@ Status WebGpuExecutionProvider::OnRunStart(const onnxruntime::RunOptions& /*run_
   }
 
   if (IsGraphCaptureEnabled() && IsGraphCaptureAllowed() && !IsGraphCaptured(0)) {
-    ORT_NOT_IMPLEMENTED("graph capture not implemented");
+    context_.CaptureBegin(&captured_commands_, *graph_buffer_mgr_);
   }
+
   return Status::OK();
 }
 
 Status WebGpuExecutionProvider::OnRunEnd(bool /* sync_stream */, const onnxruntime::RunOptions& /*run_options*/) {
+  context_.Flush(BufferManager());
+
   if (IsGraphCaptureEnabled() && !IsGraphCaptured(0)) {
     if (IsGraphCaptureAllowed()) {
-      ORT_NOT_IMPLEMENTED("graph capture not implemented");
-      // is_graph_captured_ = true;
+      context_.CaptureEnd();
+      is_graph_captured_ = true;
     } else {
       IncrementRegularRunCountBeforeGraphCapture();
     }
   }
-
-  context_.Flush();
 
   if (profiler_->Enabled()) {
     context_.CollectProfilingData(profiler_->Events());
@@ -911,8 +954,16 @@ bool WebGpuExecutionProvider::IsGraphCaptured(int) const {
 
 Status WebGpuExecutionProvider::ReplayGraph(int) {
   ORT_ENFORCE(IsGraphCaptured(0));
-  ORT_ENFORCE(false);
+  context_.Replay(captured_commands_, *graph_buffer_mgr_);
   return Status::OK();
+}
+
+webgpu::BufferManager& WebGpuExecutionProvider::BufferManager() const {
+  if (graph_buffer_mgr_) {
+    return *graph_buffer_mgr_;
+  } else {
+    return context_.BufferManager();
+  }
 }
 
 bool WebGpuExecutionProvider::IsGraphCaptureAllowed() const {

@@ -213,7 +213,7 @@ class TestOpMatMul4Bits(unittest.TestCase):
         )
 
         # Quantize fp32 model to int4 model
-        from onnxruntime.quantization import matmul_nbits_quantizer
+        from onnxruntime.quantization import matmul_nbits_quantizer  # noqa: PLC0415
 
         model = quant_utils.load_model_with_shape_infer(Path(model_fp32_path))
         quant_config = matmul_nbits_quantizer.DefaultWeightOnlyQuantConfig(
@@ -281,7 +281,7 @@ class TestOpMatMul4Bits(unittest.TestCase):
         )
 
         # Quantize fp32 model to int4 model
-        from onnxruntime.quantization import matmul_nbits_quantizer
+        from onnxruntime.quantization import matmul_nbits_quantizer  # noqa: PLC0415
 
         algo_config = None
         if algorithm == "RTN":
@@ -387,6 +387,8 @@ class TestOpMatMul4Bits(unittest.TestCase):
     def test_quantize_matmul_int4_using_rtn_algo(self):
         if not find_spec("neural_compressor"):
             self.skipTest("skip test_smooth_quant since neural_compressor is not installed")
+        if not find_spec("torch"):
+            self.skipTest("skip test_quantize_matmul_int4_using_rtn_algo since torch is not installed")
         model_fp32_path = str(Path(self._tmp_model_dir.name).joinpath("matmul_fp32_offset.onnx").absolute())
         self.construct_model_matmul(model_fp32_path, 4, symmetric=False)
         data_reader = self.input_feeds(1, {"input": (100, 52)})
@@ -398,6 +400,8 @@ class TestOpMatMul4Bits(unittest.TestCase):
     def test_quantize_matmul_int4_using_gptq_algo(self):
         if not find_spec("neural_compressor"):
             self.skipTest("skip test_smooth_quant since neural_compressor is not installed")
+        if not find_spec("torch"):
+            self.skipTest("skip test_quantize_matmul_int4_using_gptq_algo since torch is not installed")
         model_fp32_path = str(Path(self._tmp_model_dir.name).joinpath("matmul_fp32_offset.onnx").absolute())
         self.construct_model_matmul(model_fp32_path, 4, symmetric=False)
         data_reader = self.input_feeds(1, {"input": (100, 52)})

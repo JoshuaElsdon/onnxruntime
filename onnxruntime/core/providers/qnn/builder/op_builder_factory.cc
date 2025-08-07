@@ -43,6 +43,7 @@ OpBuilderRegistrations::OpBuilderRegistrations() {
     CreateSimpleOpBuilder("Elu", *this);
     CreateSimpleOpBuilder("Round", *this);
     CreateSimpleOpBuilder("Where", *this);
+    CreateSimpleOpBuilder("ScatterND", *this);
     CreateSimpleOpBuilder("Sigmoid", *this);
     CreateSimpleOpBuilder("Sin", *this);
     CreateSimpleOpBuilder("Sqrt", *this);
@@ -165,6 +166,10 @@ OpBuilderRegistrations::OpBuilderRegistrations() {
   }
 
   {
+    CreateReciprocalOpBuilder("Reciprocal", *this);
+  }
+
+  {
     CreatePadOpBuilder("Pad", *this);
   }
 
@@ -173,7 +178,23 @@ OpBuilderRegistrations::OpBuilderRegistrations() {
   }
 
   {
+    CreateEinsumOpBuilder("Einsum", *this);
+  }
+
+  {
     CreateMatMulOpBuilder("MatMul", *this);
+  }
+
+  {
+    CreateMeanOpBuilder("Mean", *this);
+  }
+
+  {
+    CreateLSTMOpBuilder("LSTM", *this);
+  }
+
+  {
+    CreateCumSumOpBuilder("CumSum", *this);
   }
 }
 
