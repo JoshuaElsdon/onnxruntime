@@ -28,6 +28,7 @@ static inline int nearest_int(float fval)
     return static_cast<int>(std::round(fval));
 }
 
+/*
 void quantize_row_q8_K_ref(const float* x, block_q8_K* y, int64_t k)
 {
     assert(k % QK_K == 0);
@@ -36,7 +37,7 @@ void quantize_row_q8_K_ref(const float* x, block_q8_K* y, int64_t k)
     for (int i = 0; i < nb; i++) {
         float max = 0;
         float amax = 0;
-        for (int j = 0; j < QK_K; ++j) {
+        for (size_t j = 0; j < QK_K; ++j) {
             float ax = fabsf(x[j]);
             if (ax > amax) {
                 amax = ax;
@@ -51,12 +52,12 @@ void quantize_row_q8_K_ref(const float* x, block_q8_K* y, int64_t k)
         }
 
         const float iscale = -127.f / max;
-        for (int j = 0; j < QK_K; ++j) {
+        for (size_t j = 0; j < QK_K; ++j) {
             int v = nearest_int(iscale * x[j]);
             y[i].qs[j] = static_cast<int8_t>(std::min(127, v));
         }
 
-        for (int j = 0; j < QK_K / 16; ++j) {
+        for (size_t j = 0; j < QK_K / 16; ++j) {
             int sum = 0;
             for (int ii = 0; ii < 16; ++ii) {
                 sum += y[i].qs[j * 16 + ii];
@@ -67,6 +68,7 @@ void quantize_row_q8_K_ref(const float* x, block_q8_K* y, int64_t k)
         x += QK_K;
     }
 }
+*/
 
 void dequantize_row_q8_K(const block_q8_K* x, float* y, int64_t k)
 {
@@ -74,7 +76,7 @@ void dequantize_row_q8_K(const block_q8_K* x, float* y, int64_t k)
     const int64_t nb = k / QK_K;
 
     for (int i = 0; i < nb; i++) {
-        for (int j = 0; j < QK_K; ++j) {
+        for (size_t j = 0; j < QK_K; ++j) {
             *y++ = x[i].d * x[i].qs[j];
         }
     }
@@ -148,8 +150,17 @@ size_t QTernaryBitGemmPerGemmWorkspaceSize(
     size_t /*N*/,
     size_t K,
     size_t BlkLen,
+    bool /*HasZeroPoint*/,
     MLAS_QNBIT_GEMM_COMPUTE_TYPE ComputeType
-)
+);
+
+size_t QTernaryBitGemmPerGemmWorkspaceSize(
+    size_t M,
+    size_t /*N*/,
+    size_t K,
+    size_t BlkLen,
+    bool /*HasZeroPoint*/,
+    MLAS_QNBIT_GEMM_COMPUTE_TYPE ComputeType)
 {
     assert(ComputeType == SQNBIT_CompInt8);
     assert(BlkLen == QK_K);
@@ -165,6 +176,7 @@ size_t QTernaryBitGemmPackQuantBDataSize(
     size_t N,
     size_t K,
     size_t BlkLen,
+    bool /*HasZeroPoint*/,
     MLAS_QNBIT_GEMM_COMPUTE_TYPE ComputeType
 )
 {
@@ -177,21 +189,21 @@ size_t QTernaryBitGemmPackQuantBDataSize(
     return BlockCountK * N * sizeof(block_tq1_0);
 }
 
-size_t SQTernaryBitGemmKernel_TQ1_0_Q8_K(
-    size_t /*BlkLen*/,
-    const std::byte* QuantA,
-    const std::byte* QuantB,
-    const float* /*QuantBScale*/,
-    const std::byte* /*QuantBZeroPoint*/,
-    float* C,
-    size_t CountM,
-    size_t CountN,
-    size_t CountK,
-    size_t /*BlockCountK*/,
-    size_t ldc,
-    const float* Bias
-)
-{
+//size_t SQTernaryBitGemmKernel_TQ1_0_Q8_K(
+//    size_t /*BlkLen*/,
+//    const std::byte* QuantA,
+//    const std::byte* QuantB,
+//    const float* /*QuantBScale*/,
+//    const std::byte* /*QuantBZeroPoint*/,
+//    float* C,
+//    size_t CountM,
+//    size_t CountN,
+//    size_t CountK,
+//    size_t /*BlockCountK*/,
+//    size_t ldc,
+//    const float* Bias
+//)
+/*{
 
     const size_t BlkCountK = (CountK + QK_K - 1) / QK_K;
 
@@ -236,7 +248,7 @@ size_t SQTernaryBitGemmKernel_TQ1_0_Q8_K(
     }
 
     return CountM;
-}
+}*/
 // Kernel dispatch table
 const MLAS_QNBIT_GEMM_DISPATCH MlasSQTernaryBitGemmDispatchFallback = []() {
     MLAS_QNBIT_GEMM_DISPATCH d;
@@ -244,7 +256,7 @@ const MLAS_QNBIT_GEMM_DISPATCH MlasSQTernaryBitGemmDispatchFallback = []() {
     d.Q2BitGemmPackQuantBDataSize = QTernaryBitGemmPackQuantBDataSize;
     d.SQ2BitGemmPackQuantBData = nullptr;
     d.Q2BitGemmPerGemmWorkspaceSize = QTernaryBitGemmPerGemmWorkspaceSize;
-    d.SQ2BitGemmKernel_CompInt8 = SQTernaryBitGemmKernel_TQ1_0_Q8_K; // Not implemented in fallback
+    //d.SQ2BitGemmKernel_CompInt8 = SQTernaryBitGemmKernel_TQ1_0_Q8_K; // Not implemented in fallback
     d.QuantizeARow_CompInt8 = QuantizeARow_Q8_K;
 
     return d;

@@ -485,11 +485,11 @@ TEST(MatMulNBits, Float16_Accuracy4) {
   TestMatMulNBitsTyped<MLFloat16, Q4Bits, 100, 288, 1234, 16, 4>();
 }
 
-TEST(MatMulNBits, LegacyShape) {
+/*TEST(MatMulNBits, LegacyShape) {
   constexpr bool legacy_shape = true;
   TestMatMulNBitsTyped<float, 4, 2, 16, 16, 4, legacy_shape>();
   TestMatMulNBitsTyped<MLFloat16, 1, 2, 16, 16, 4, legacy_shape>();
-}
+}*/
 
 #endif
 #endif

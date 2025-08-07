@@ -325,6 +325,7 @@ QTernaryBitGemmPackQuantBDataSize(
     size_t N,
     size_t K,
     size_t BlkLen,
+    bool HasZeroPoint,
     MLAS_QNBIT_GEMM_COMPUTE_TYPE ComputeType
 )
 {
@@ -332,6 +333,7 @@ QTernaryBitGemmPackQuantBDataSize(
     assert(BlkLen == QK_K);
     ORT_UNUSED_PARAMETER(ComputeType);
     ORT_UNUSED_PARAMETER(BlkLen);
+    ORT_UNUSED_PARAMETER(HasZeroPoint);
     size_t BlkCountK = (K + QK_K - 1) / QK_K;
     return BlkCountK * N * sizeof(block_tq1_0);
 }
@@ -342,6 +344,7 @@ QTernaryBitGemmPerGemmWorkspaceSize(
     size_t /*N*/,
     size_t K,
     size_t BlkLen,
+    bool /*HasZeroPoint*/,
     MLAS_QNBIT_GEMM_COMPUTE_TYPE ComputeType
 )
 {
