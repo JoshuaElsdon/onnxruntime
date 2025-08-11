@@ -69,6 +69,7 @@ static OpBuilderRegistrations CreateOpBuilderRegistrations() {
   CreateGridSampleOpBuilder("GridSample", op_registrations);
   CreateLRNOpBuilder("LRN", op_registrations);
   CreateGemmOpBuilder("MatMul", op_registrations);
+  CreateMatMulNBitsOpBuilder("MatMulNBits", op_registrations);
   CreatePadOpBuilder("Pad", op_registrations);
   CreateReshapeOpBuilder("Reshape", op_registrations);
   CreateResizeOpBuilder("Resize", op_registrations);
