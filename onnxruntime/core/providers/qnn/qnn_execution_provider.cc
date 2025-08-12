@@ -214,6 +214,7 @@ static void ParseOpPackages(const std::string& op_packages_string, std::vector<o
       op_package_target = std::string(splitStrings[3]);
       LOGS_DEFAULT(VERBOSE) << "Op package target: " << op_package_target;
     }
+    std::cout << "adding the custom op package " << op_package_path << std::endl;
     op_packages.push_back({op_type, op_package_path, op_package_interface, op_package_target});
   }
 }
@@ -501,7 +502,9 @@ QNNExecutionProvider::QNNExecutionProvider(const ProviderOptions& provider_optio
   static const std::string QNN_OP_PACKAGES = "op_packages";
   std::vector<onnxruntime::qnn::OpPackage> op_packages;
   auto op_packages_pos = provider_options_map.find(QNN_OP_PACKAGES);
+   std::cout << "User specified op_packages comming up" << std::endl;
   if (op_packages_pos != provider_options_map.end()) {
+    std::cout << "User specified op_packages: " << op_packages_pos->second << std::endl;
     ParseOpPackages(op_packages_pos->second, op_packages);
   }
 
@@ -563,11 +566,12 @@ QNNExecutionProvider::QNNExecutionProvider(const ProviderOptions& provider_optio
     }
   }
 
-  static const std::string QNN_CUSTOM_OP_PACKAGE = "op_pack_path";
-  auto op_pack_path_pos = provider_options_map.find(QNN_CUSTOM_OP_PACKAGE);
-  if (op_pack_path_pos != provider_options_map.end()) {
-    op_pack_path_ = op_pack_path_pos->second;
-    LOGS_DEFAULT(VERBOSE) << "Custom op package path: " << op_pack_path_;
+  // this is to pass flags to the custom op package for debugging, should be removed in production
+  static const std::string QNN_CUSTOM_OP_PACKAGE_HINT = "op_pack_hint";
+  auto op_pack_hint_pos = provider_options_map.find(QNN_CUSTOM_OP_PACKAGE_HINT);
+  if (op_pack_hint_pos != provider_options_map.end()) {
+    model_settings_.model_hints = op_pack_hint_pos->second;
+    std::cout << "Model hints: " << model_settings_.model_hints << std::endl;
   }
 
   // For context binary generation with weight sharing enabled, use the QnnBackendManager from the shared context if it exits
@@ -594,42 +598,6 @@ QNNExecutionProvider::QNNExecutionProvider(const ProviderOptions& provider_optio
       SharedContext::GetInstance().SetSharedQnnBackendManager(qnn_backend_manager_);
     }
   }
-
-  static const std::string QNN_CUSTOM_OP_PACKAGE_INTERFACE = "op_pack_interface";
-  auto op_pack_interface_pos = provider_options_map.find(QNN_CUSTOM_OP_PACKAGE_INTERFACE);
-  if (op_pack_interface_pos != provider_options_map.end()) {
-    op_pack_interface_ = op_pack_interface_pos->second;
-    LOGS_DEFAULT(VERBOSE) << "Custom op package interface: " << op_pack_interface_;
-  }
-
-  static const std::string QNN_CUSTOM_OP_PACKAGE_TARGET = "op_pack_target";
-  auto op_pack_target_pos = provider_options_map.find(QNN_CUSTOM_OP_PACKAGE_TARGET);
-  if (op_pack_target_pos != provider_options_map.end()) {
-    op_pack_target_ = op_pack_target_pos->second;
-    LOGS_DEFAULT(VERBOSE) << "Custom op package target: " << op_pack_target_;
-  }
-
-  static const std::string QNN_CUSTOM_OP_PACKAGE_HINT = "op_pack_hint";
-  auto op_pack_hint_pos = provider_options_map.find(QNN_CUSTOM_OP_PACKAGE_HINT);
-  if (op_pack_hint_pos != provider_options_map.end()) {
-    model_settings_.model_hints = op_pack_hint_pos->second;
-    std::cout << "Model hints: " << model_settings_.model_hints << std::endl;
-
-  }
-  qnn_backend_manager_ = qnn::QnnBackendManager::Create(
-      qnn::QnnBackendManagerConfig{backend_path,
-                                   op_pack_path_,
-                                   op_pack_interface_,
-                                   op_pack_target_,
-                                   profiling_level_etw,
-                                   profiling_level,
-                                   profiling_file_path,
-                                   context_priority,
-                                   qnn_saver_path,
-                                   device_id_,
-                                   htp_arch,
-                                   soc_model,
-                                   enable_htp_weight_sharing});
 
 #if defined(_WIN32)
   if (onnxruntime::logging::EtwRegistrationManager::SupportsETW()) {
@@ -1020,69 +988,6 @@ QNNExecutionProvider::GetCapability(const onnxruntime::GraphViewer& graph_viewer
   std::unordered_map<const Node*, const NodeUnit*> node_unit_map;
 
   std::tie(node_unit_holder, node_unit_map) = GetQDQNodeUnits(graph_viewer, logger);
-
-  ///// josh' hack
-
-  // print out the node_unit_map
-  LOGS(logger, VERBOSE) << "Node Unit Map:";
-  for (const auto& pair : node_unit_map) {
-    const Node* node = pair.first;
-    const NodeUnit* node_unit = pair.second;
-    LOGS(logger, VERBOSE) << "Node Unit: " << node_unit->Name() << ", OpType: " << node_unit->OpType()
-                          << ", Node Name: " << node->Name()
-                          << ", Node Index: " << node->Index();
-  }
-
-  std::unordered_set<std::string> initializer_input_lookup;
-  auto graph_initializers = graph_viewer.GetAllInitializedTensors();
-  for (auto graph_ini : graph_initializers) {
-    initializer_input_lookup.emplace(graph_ini.first);
-  }
-
-  // Util function that initializes a table that maps a graph input or output name to its index.
-  auto init_input_output_index_map = [](std::unordered_map<std::string, size_t>& index_map,
-                                        const std::vector<const NodeArg*>& node_args) {
-    const size_t num_args = node_args.size();
-    for (size_t i = 0; i < num_args; i++) {
-      index_map.emplace(node_args[i]->Name(), i);
-    }
-  };
-
-  std::unordered_map<std::string, size_t> model_input_index_map;
-  init_input_output_index_map(model_input_index_map, graph_viewer.GetInputs());  // GetInputs excludes initializers.
-
-  std::unordered_map<std::string, size_t> model_output_index_map;
-  init_input_output_index_map(model_output_index_map, graph_viewer.GetOutputs());
-
-  auto qnn_model_wrapper = qnn::QnnModelWrapper(graph_viewer, logger,
-                                                qnn_backend_manager_->GetQnnInterface(),
-                                                qnn_backend_manager_->GetQnnBackendHandle(),
-                                                model_input_index_map,
-                                                model_output_index_map,
-                                                initializer_input_lookup,
-                                                qnn_backend_manager_->GetQnnBackendType(),
-                                                model_settings_);
-
-  std::vector<std::unique_ptr<qnn::IQnnNodeGroup>> qnn_node_groups;
-  std::vector<std::unique_ptr<NodeUnit>> node_unit_holder_groups;
-  qnn_node_groups.reserve(node_unit_holder_groups.size());
-
-  if (Status status = qnn::GetQnnNodeGroups(qnn_node_groups, qnn_model_wrapper,
-                                            node_unit_map, node_unit_holder_groups.size(), logger);
-      !status.IsOK()) {
-    LOGS(logger, ERROR) << status.ErrorMessage();
-    return {};
-  }
-
-  // print out the node groups
-  LOGS(logger, VERBOSE) << "QNN Node Groups:";
-  for (const auto& qnn_node_group : qnn_node_groups) {
-    LOGS(logger, VERBOSE) << ", Type: " << qnn_node_group->Type()
-                          << ", Target Node Unit OpType: " << qnn_node_group->GetTargetNodeUnit()->OpType()
-                          << ", Number of Nodes: " << qnn_node_group->GetNodeUnits().size();
-  }
-
-  //// end josh' hack
 
   // remove is_qnn_ctx_model related code
   const auto supported_nodes = GetSupportedNodes(graph_viewer, node_unit_map,

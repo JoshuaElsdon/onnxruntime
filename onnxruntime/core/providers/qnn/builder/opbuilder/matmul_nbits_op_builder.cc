@@ -570,7 +570,6 @@ Status MatMulNBitsOpBuilder::ProcessAttributesAndOutputs([[maybe_unused]]QnnMode
   if (num_tokens == 1) {
     LOGS(logger, INFO) << "Using the MatMulNBits kernel" << do_op_validation;
 
-    LOGS(logger, INFO) << "Making scratch buffer " << do_op_validation;
     for (size_t i = 0; i < hints.split_count; ++i) {
       std::vector<std::string> param_tensor_names = load_parmams_to_qnn(qnn_model_wrapper, node_unit.Index(), kernel_params, node_unit.Name() + "_split_" + std::to_string(i));
 

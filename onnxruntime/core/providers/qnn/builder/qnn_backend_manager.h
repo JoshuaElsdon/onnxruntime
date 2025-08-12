@@ -101,9 +101,6 @@ struct OpPackage {
 // configuration values for QnnBackendManager creation
 struct QnnBackendManagerConfig {
   std::string backend_path;
-  std::string op_pack_path;
-  std::string op_pack_interface;
-  std::string op_pack_target;
   ProfilingLevel profiling_level_etw;
   ProfilingLevel profiling_level;
   std::string profiling_file_path;
@@ -129,9 +126,6 @@ class QnnBackendManager : public std::enable_shared_from_this<QnnBackendManager>
   // std::make_shared().
   QnnBackendManager(const QnnBackendManagerConfig& config, PrivateConstructorTag)
       : backend_path_(config.backend_path),
-        op_pack_path_(config.op_pack_path),
-        op_pack_interface_(config.op_pack_interface),
-        op_pack_target_(config.op_pack_target),
         profiling_level_etw_(config.profiling_level_etw),
         profiling_level_(config.profiling_level),
         profiling_file_path_(config.profiling_file_path),
@@ -358,85 +352,8 @@ class QnnBackendManager : public std::enable_shared_from_this<QnnBackendManager>
     }
   }
 
-  Status LoadOpPackage() {
-    // if op_pack_path_ is empty, return
-    if (op_pack_path_.empty()) {
-      LOGS(*logger_, VERBOSE) << "No op package path provided. Skipping op package loading.";
-      return Status::OK();
-    }
-    LOGS(*logger_, VERBOSE) << "Loading op package from path: " << op_pack_path_;
-    if (op_pack_interface_.empty()) {
-      LOGS(*logger_, ERROR) << "Op package interface is empty.";
-      return Status(common::ONNXRUNTIME, common::FAIL, "Op package interface is empty.");
-    }
-    LOGS(*logger_, VERBOSE) << "Op package target: " << op_pack_target_;
-
-    if (nullptr == qnn_interface_.backendRegisterOpPackage) {
-      LOGS(*logger_, ERROR) << "backendRegisterOpPackageFnHandle is nullptr.";
-    }
-
-    // varify the file at the path exists
-    if (!std::filesystem::is_regular_file(op_pack_path_)) {
-      LOGS(*logger_, ERROR) << "Op package path does not exist: " << op_pack_path_;
-      return Status(common::ONNXRUNTIME, common::FAIL, "Op package path does not exist: " + op_pack_path_);
-    }
-
-    Qnn_ErrorHandle_t result = qnn_interface_.backendRegisterOpPackage(
-      backend_handle_,
-      op_pack_path_.c_str(),
-      op_pack_interface_.c_str(),
-      op_pack_target_.c_str()
-    );
-
-    if (result != QNN_SUCCESS) {
-      switch (result) {
-        case QNN_BACKEND_ERROR_INVALID_ARGUMENT:
-          LOGS(*logger_, ERROR) << "Invalid argument, please check if op package path or interface provider is NULL.";
-          break;
-        case QNN_BACKEND_ERROR_OP_PACKAGE_NOT_FOUND:
-          LOGS(*logger_, ERROR) << "Could not open op package path. HTP";
-          break;
-        case QNN_BACKEND_ERROR_OP_PACKAGE_IF_PROVIDER_NOT_FOUND:
-          LOGS(*logger_, ERROR) << "Could not find interfaceProvider symbol in op package library.";
-          break;
-        case QNN_BACKEND_ERROR_OP_PACKAGE_REGISTRATION_FAILED:
-          LOGS(*logger_, ERROR) << "Op package registration failed.";
-          break;
-        case QNN_BACKEND_ERROR_OP_PACKAGE_UNSUPPORTED_VERSION:
-          LOGS(*logger_, ERROR) << "Op package has interface version not supported by this backend.";
-          break;
-        case QNN_BACKEND_ERROR_NOT_SUPPORTED:
-          LOGS(*logger_, ERROR) << "Op package registration is not supported.";
-          break;
-        case QNN_BACKEND_ERROR_INVALID_HANDLE:
-          LOGS(*logger_, ERROR) << "backend is not a valid handle.";
-          break;
-        case QNN_BACKEND_ERROR_OP_PACKAGE_DUPLICATE:
-          LOGS(*logger_, ERROR) << "OpPackageName+OpName must be unique. Op package content information can be be obtained with \
-QnnOpPackage interface. Indicates that an Op with the same package name and op name was already registered.";
-          break;
-        case QNN_COMMON_ERROR_SYSTEM_COMMUNICATION:
-          LOGS(*logger_, ERROR) << "SSR occurrence (successful recovery).";
-          break;
-        case QNN_COMMON_ERROR_SYSTEM_COMMUNICATION_FATAL:
-          LOGS(*logger_, ERROR) << "SSR occurrence (unsuccessful recovery).";
-          break;
-        default:
-          LOGS(*logger_, WARNING) << "Unknown error occurred while initializing logging in the QNN backend.";
-          break;
-      }
-    }
-    ORT_RETURN_IF(QNN_SUCCESS != result, "Failed to load op package. Error: ", QnnErrorHandleToString(result));
-    LOGS(*logger_, VERBOSE) << "Successfully load the op package.";
-
-    return Status::OK();
-  }
-
  private:
   const std::string backend_path_;
-  const std::string op_pack_path_;
-  const std::string op_pack_interface_;
-  const std::string op_pack_target_;
   std::recursive_mutex logger_recursive_mutex_;
   const logging::Logger* logger_ = nullptr;
   QNN_INTERFACE_VER_TYPE qnn_interface_ = QNN_INTERFACE_VER_TYPE_INIT;

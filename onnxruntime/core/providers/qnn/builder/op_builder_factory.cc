@@ -184,6 +184,9 @@ OpBuilderRegistrations::OpBuilderRegistrations() {
   {
     CreateMatMulOpBuilder("MatMul", *this);
   }
+  {
+    CreateMatMulNBitsOpBuilder("MatMulNBits", *this);
+  }
 
   {
     CreateMeanOpBuilder("Mean", *this);
