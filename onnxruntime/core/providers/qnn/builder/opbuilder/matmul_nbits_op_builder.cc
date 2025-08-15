@@ -536,6 +536,11 @@ Status MatMulNBitsOpBuilder::ProcessAttributesAndOutputs([[maybe_unused]]QnnMode
       output_info.shape[output_info.shape.size()-1] = hints.split_size;
       // make some output tensors.
       std::string output_name = node_unit.Name() + "Output_" + std::to_string(i);
+      split_output_tensor_names.push_back(output_name);
+      LOGS(logger, INFO) << "Added output tensor: " << output_name << " with shape_size " << output_info.shape.size();
+      for (size_t j = 0; j < output_info.shape.size(); ++j) {
+        LOGS(logger, INFO) << "Output tensor shape[" << j << "]: " << output_info.shape[j];
+      }
       QnnTensorWrapper output_tensor_split(
           output_name,
           QNN_TENSOR_TYPE_NATIVE,
@@ -544,11 +549,7 @@ Status MatMulNBitsOpBuilder::ProcessAttributesAndOutputs([[maybe_unused]]QnnMode
           std::move(output_info.shape));
       // add the tensor to the model wrapper.
       ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(output_tensor_split)), "Failed to add output tensor");
-      split_output_tensor_names.push_back(output_name);
-      LOGS(logger, INFO) << "Added output tensor: " << output_name << " with shape_size " << output_info.shape.size();
-      for (size_t j = 0; j < output_info.shape.size(); ++j) {
-        LOGS(logger, INFO) << "Output tensor shape[" << j << "]: " << output_info.shape[j];
-      }
+
       
     }
   } else {
@@ -817,7 +818,7 @@ Status MatMulNBitsOpBuilder::ProcessAttributesAndOutputs([[maybe_unused]]QnnMode
       QnnTensorWrapper weights_tensor(weights_name,
                                       QNN_TENSOR_TYPE_NATIVE,
                                       QNN_DATATYPE_UFIXED_POINT_8,
-                                      QnnQuantParamsWrapper(scale, offset),
+                                      std::move(QnnQuantParamsWrapper(scale, offset)),
                                       std::move(weights_shape));
       ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(weights_tensor)), "Failed to add tensor.");
 
