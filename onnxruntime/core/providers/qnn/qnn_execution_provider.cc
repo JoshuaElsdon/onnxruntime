@@ -568,9 +568,12 @@ QNNExecutionProvider::QNNExecutionProvider(const ProviderOptions& provider_optio
     }
   }
 
+<<<<<<< HEAD
   // Option to skip QNN API interface version check to use other QNN library other than default.
   static const std::string SKIP_QNN_VERSION_CHECK = "skip_qnn_version_check";
   auto skip_qnn_version_check = ParseBoolOption(SKIP_QNN_VERSION_CHECK, false, provider_options_map);
+=======
+>>>>>>> 96d33d3c13 (initial main merge, hitting issues with 1001, most likely the qnn version changed the amount of memory allowed.)
   // this is to pass flags to the custom op package for debugging, should be removed in production
   static const std::string QNN_CUSTOM_OP_PACKAGE_HINT = "op_pack_hint";
   auto op_pack_hint_pos = provider_options_map.find(QNN_CUSTOM_OP_PACKAGE_HINT);
