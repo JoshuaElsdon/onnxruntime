@@ -571,6 +571,13 @@ QNNExecutionProvider::QNNExecutionProvider(const ProviderOptions& provider_optio
   // Option to skip QNN API interface version check to use other QNN library other than default.
   static const std::string SKIP_QNN_VERSION_CHECK = "skip_qnn_version_check";
   auto skip_qnn_version_check = ParseBoolOption(SKIP_QNN_VERSION_CHECK, false, provider_options_map);
+  // this is to pass flags to the custom op package for debugging, should be removed in production
+  static const std::string QNN_CUSTOM_OP_PACKAGE_HINT = "op_pack_hint";
+  auto op_pack_hint_pos = provider_options_map.find(QNN_CUSTOM_OP_PACKAGE_HINT);
+  if (op_pack_hint_pos != provider_options_map.end()) {
+    model_settings_.model_hints = op_pack_hint_pos->second;
+    std::cout << "Model hints: " << model_settings_.model_hints << std::endl;
+  }
 
   // For context binary generation with weight sharing enabled, use the QnnBackendManager from the shared context if it exits
   // So that all graphs from later sessions will be compiled into the same QNN context
