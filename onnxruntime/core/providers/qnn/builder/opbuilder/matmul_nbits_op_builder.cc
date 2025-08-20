@@ -570,6 +570,46 @@ Status MatMulNBitsOpBuilder::ProcessAttributesAndOutputs([[maybe_unused]]QnnMode
 
   if (num_tokens == 1) {
     LOGS(logger, INFO) << "Using the MatMulNBits kernel" << do_op_validation;
+      std::string lut_name = node_unit.Name() + "_LUT";
+      std::string offsets_name = node_unit.Name() + "_offsets";
+
+      if(hints.decompose)
+      {
+        // this is for when we have decomposed the shuffle kernel into the LUT/Offset and the matmul. 
+        // this is only done once for a set of splits.
+
+        // first lets make the intermediate tensors LUT of size [1,1,1,k*4] type QNN_DATATYPE_FLOAT_16; offsets of size [1, 1, 1, k/block_size] type QNN_DATATYPE_FLOAT_16.
+        
+        std::vector<uint32_t> lut_shape = {1, 1, 1, kernel_params.K.uint32Value * 4};
+        QnnTensorWrapper lut_tensor_wrapper(
+            lut_name,
+            QNN_TENSOR_TYPE_NATIVE,
+            QNN_DATATYPE_FLOAT_16,
+            std::move(QnnQuantParamsWrapper()),
+            std::move(lut_shape));
+        ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(lut_tensor_wrapper)), "Failed to add LUT tensor");
+
+        
+        std::vector<uint32_t> offsets_shape = {1, 1, 1, kernel_params.K.uint32Value / kernel_params.block.uint32Value};
+        QnnTensorWrapper offsets_tensor_wrapper(
+            offsets_name,
+            QNN_TENSOR_TYPE_NATIVE,
+            QNN_DATATYPE_FLOAT_16,
+            std::move(QnnQuantParamsWrapper()),
+            std::move(offsets_shape));
+        ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(offsets_tensor_wrapper)), "Failed to add offsets tensor");
+
+        // create the operation.
+        LOGS(logger, INFO) << "Using the MatMulNBits kernel without the decomposition.";
+        ORT_RETURN_IF_NOT(qnn_model_wrapper.CreateQnnNode(node_unit.Name() + "LUT",
+                                                          "MatMulNBits",
+                                                          "MatMulNBitsLUT",
+                                                          {node_inputs[0].node_arg.Name()},
+                                                          {lut_name, offsets_name},
+                                                          {},
+                                                          do_op_validation),
+                          "Failed to add MatMulNBitsLUT node.");
+      }
 
     for (size_t i = 0; i < hints.split_count; ++i) {
       std::vector<std::string> param_tensor_names = load_parmams_to_qnn(qnn_model_wrapper, node_unit.Index(), kernel_params, node_unit.Name() + "_split_" + std::to_string(i));
@@ -603,7 +643,7 @@ Status MatMulNBitsOpBuilder::ProcessAttributesAndOutputs([[maybe_unused]]QnnMode
                                                           do_op_validation),
                           "Failed to add fused MatMulNBits fused node.");
 
-      } else {  // hints.scratch = false
+      } else if(!hints.scratch && !hints.decompose) {  // hints.scratch = false
         LOGS(logger, INFO) << "Using the MatMulNBits kernel without scratch buffer";
         ORT_RETURN_IF_NOT(qnn_model_wrapper.CreateQnnNode(node_unit.Name() + "_split_" + std::to_string(i),
                                                           "MatMulNBits",
@@ -613,6 +653,17 @@ Status MatMulNBitsOpBuilder::ProcessAttributesAndOutputs([[maybe_unused]]QnnMode
                                                           std::move(param_tensor_names),
                                                           do_op_validation),
                           "Failed to add fused MatMulNBits fused node without scratch buffer.");
+      }
+      else if(hints.decompose) {
+        LOGS(logger, INFO) << "Using the MatMulNBitsLUTless kernel";
+        ORT_RETURN_IF_NOT(qnn_model_wrapper.CreateQnnNode(node_unit.Name() + "_split_" + std::to_string(i),
+                                                          "MatMulNBits",
+                                                          "MatMulNBitsLUTless",
+                                                          {lut_name, offsets_name, split_b_tensor_names[i], split_scales_tensor_names[i], split_zeros_tensor_names[i]},
+                                                          {split_output_tensor_names[i]},
+                                                          std::move(param_tensor_names),
+                                                          do_op_validation),
+                          "Failed to add fused MatMulNBitsLUTless fused node.");
       }
     }
 

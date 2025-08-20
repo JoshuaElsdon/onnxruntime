@@ -297,6 +297,7 @@ class QnnModelWrapper {
     bool shuffle = false;  // true ⇒ use fast shuffle kernel
     bool scratch = false;  // true ⇒ use scratch memory for fast shuffle kernel
     bool split = false;
+    bool decompose = false;
     uint32_t split_size = 0;   // 0 ⇒ none
     uint32_t split_count = 1;  // 1 ⇒ no split, 2 ⇒ split into two tensors, etc.
   };
@@ -311,6 +312,10 @@ class QnnModelWrapper {
     if (model_hints.find("shuffle") != std::string::npos) {
       hints.shuffle = true;
       LOGS(logger, INFO) << "Model hint 'shuffle' found.";
+    }
+    if (model_hints.find("decompose") != std::string::npos) {
+      hints.decompose = true;
+      LOGS(logger, INFO) << "Model hint 'decompose' found.";
     }
     if (model_hints.find("scratch") != std::string::npos) {
       hints.scratch = true;
