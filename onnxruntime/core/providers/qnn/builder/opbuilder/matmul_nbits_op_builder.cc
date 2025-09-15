@@ -875,7 +875,7 @@ Status MatMulNBitsOpBuilder::ProcessAttributesAndOutputs([[maybe_unused]]QnnMode
                                                         QNN_OP_CONCAT,
                                                         std::move(split_output_tensor_names),
                                                         {node_outputs[0].node_arg.Name()},
-                                                        {},//std::move(param_tensor_names_concat),
+                                                        std::move(param_tensor_names_concat),
                                                         do_op_validation),
                         "Failed to add fused Concat node.");
     }
