@@ -259,19 +259,19 @@ static Status CreateOrValidateOnQnn(QnnModelWrapper& qnn_model_wrapper,
     scalar_param.bool8Value = 0;
     QnnParamWrapper transpose_in0_param(input_dq_unit.Index(), input_dq_unit.Name(), QNN_OP_MAT_MUL_PARAM_TRANSPOSE_IN0,
                                         scalar_param);
-    std::vector<std::string> param_tensor_names;
-    param_tensor_names.push_back(transpose_in0_param.GetParamTensorName());
+    std::vector<std::string> matmul_param_tensor_names;
+    matmul_param_tensor_names.push_back(transpose_in0_param.GetParamTensorName());
     qnn_model_wrapper.AddParamWrapper(std::move(transpose_in0_param));
 
     QnnParamWrapper transpose_in1_param(input_dq_unit.Index(), input_dq_unit.Name(), QNN_OP_MAT_MUL_PARAM_TRANSPOSE_IN1,
                                         scalar_param);
-    param_tensor_names.push_back(transpose_in1_param.GetParamTensorName());
+    matmul_param_tensor_names.push_back(transpose_in1_param.GetParamTensorName());
     qnn_model_wrapper.AddParamWrapper(std::move(transpose_in1_param));
 
     ORT_RETURN_IF_NOT(qnn_model_wrapper.CreateQnnNode(node_name + "mat_mul", QNN_OP_PACKAGE_NAME_QTI_AISW,
                                                       QNN_OP_MAT_MUL,
                                                       {a_input_def.node_arg.Name(), weights_name}, {output_def.node_arg.Name()},
-                                                      std::move(param_tensor_names), validate),
+                                                      std::move(matmul_param_tensor_names), validate),
                       "Failed to add fused Matmul node.");
   }
 
