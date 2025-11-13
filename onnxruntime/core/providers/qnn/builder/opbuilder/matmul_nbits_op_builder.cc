@@ -233,8 +233,6 @@ Status MatMulNBitsOpBuilder::ProcessInputs([[maybe_unused]]QnnModelWrapper& qnn_
   LOGS(logger, INFO) << "Processing inputs for MatMulNBits operation.";
   // bits, block size, K and N.
   [[maybe_unused]] KernelParams kernel_params = GetKernelParams(node_unit, logger);
-  // get the hints, shuffle, scratch and split size etc.
-  [[maybe_unused]] QnnModelWrapper::ParsedHints hints = qnn_model_wrapper.parse_hints(kernel_params.N.uint32Value, logger);
 
   // get the handles for the inputs.
   std::vector<NodeUnitIODef> node_inputs = node_unit.Inputs();
@@ -244,6 +242,15 @@ Status MatMulNBitsOpBuilder::ProcessInputs([[maybe_unused]]QnnModelWrapper& qnn_
 
   // get how many tokens this MatMulNBits operation will process.
   [[maybe_unused]] int64_t num_tokens = node_inputs[0].node_arg.Shape()->dim(num_A_dims - 2).dim_value();
+
+  // get the hints, shuffle, scratch and split size etc.
+  [[maybe_unused]] QnnModelWrapper::ParsedHints hints = qnn_model_wrapper.parse_hints(kernel_params.N.uint32Value, num_tokens, logger);
+
+
+
+
+
+
 
   std::vector<std::string> split_b_tensor_names;
   std::vector<std::string> split_scales_tensor_names;
@@ -492,18 +499,24 @@ Status MatMulNBitsOpBuilder::ProcessAttributesAndOutputs([[maybe_unused]]QnnMode
                                                         [[maybe_unused]] bool do_op_validation) const {
 
   [[maybe_unused]] KernelParams kernel_params = GetKernelParams(node_unit, logger);
-  [[maybe_unused]] QnnModelWrapper::ParsedHints hints = qnn_model_wrapper.parse_hints(kernel_params.N.uint32Value, logger);
+  std::vector<NodeUnitIODef> node_inputs = node_unit.Inputs();
+  // get the input dimensions of the A input.
+  int num_A_dims = node_inputs[0].node_arg.Shape()->dim_size();
+  // get how many tokens this MatMulNBits operation will process.
+  [[maybe_unused]] int64_t num_tokens = node_inputs[0].node_arg.Shape()->dim(num_A_dims - 2).dim_value();
+  [[maybe_unused]] QnnModelWrapper::ParsedHints hints = qnn_model_wrapper.parse_hints(kernel_params.N.uint32Value, num_tokens, logger);
                                                             // get the output tensor information
 
-  std::vector<NodeUnitIODef> node_inputs = node_unit.Inputs();
+
   std::vector<NodeUnitIODef> node_outputs = node_unit.Outputs();
   ORT_RETURN_IF(node_outputs.size() != 1, "MatMulNBits node should have exactly one output, but found ", node_outputs.size());
 
-    // get the input dimensions of the A input.
-  int num_A_dims = node_inputs[0].node_arg.Shape()->dim_size();
 
-  // get how many tokens this MatMulNBits operation will process.
-  [[maybe_unused]] int64_t num_tokens = node_inputs[0].node_arg.Shape()->dim(num_A_dims - 2).dim_value();
+
+
+
+
+
 
   QnnTensorWrapper output_tensor;
   ORT_RETURN_IF_ERROR(qnn_model_wrapper.MakeTensorWrapper(node_outputs[0], output_tensor));
@@ -552,6 +565,33 @@ Status MatMulNBitsOpBuilder::ProcessAttributesAndOutputs([[maybe_unused]]QnnMode
 
 
     }
+  } else if (hints.act_tile_count > 1) {
+    // if split_count is 1, but act_tile_count > 1, we still need to create the intermediate output tensors.
+    for (size_t i = 0; i < hints.act_tile_count; ++i) {
+        TensorInfo output_info = {};
+      ORT_RETURN_IF_ERROR(qnn_model_wrapper.GetTensorInfo(node_outputs[0], output_info));
+      output_info.shape[output_info.shape.size()-2] = hints.act_tile_size;
+
+      // Will this have the effect I want?
+
+      // make some output tensors.
+      std::string output_name = node_unit.Name() + "Output_tile_" + std::to_string(i);
+      split_output_tensor_names.push_back(output_name);
+      LOGS(logger, INFO) << "Added output tensor: " << output_name << " with shape_size " << output_info.shape.size();
+      for (size_t j = 0; j < output_info.shape.size(); ++j) {
+        LOGS(logger, INFO) << "Output tensor shape[" << j << "]: " << output_info.shape[j];
+      }
+      QnnTensorWrapper output_tensor_split(
+          output_name,
+          QNN_TENSOR_TYPE_NATIVE,
+          output_info.qnn_data_type,
+          std::move(output_info.quant_param),  // If unquantized, otherwise pass scale/offset
+          std::move(output_info.shape));
+      // add the tensor to the model wrapper.
+      ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(output_tensor_split)), "Failed to add output tensor");
+
+
+    }
   } else {
     // if split_count is 1, we just use the original output tensor.
     split_output_tensor_names.push_back(node_outputs[0].node_arg.Name());
@@ -561,16 +601,13 @@ Status MatMulNBitsOpBuilder::ProcessAttributesAndOutputs([[maybe_unused]]QnnMode
   std::vector<std::string> split_b_tensor_names;
   std::vector<std::string> split_scales_tensor_names;
   std::vector<std::string> split_zeros_tensor_names;
+  std::vector<std::string> split_a_tensor_names;
   for (size_t i = 0; i < hints.split_count; ++i) {
     split_b_tensor_names.push_back(node_unit.Name() + "B_" + std::to_string(i));
     split_scales_tensor_names.push_back(node_unit.Name() + "Scale_" + std::to_string(i));
     split_zeros_tensor_names.push_back(node_unit.Name() + "Zeros_" + std::to_string(i));
   }
 
-<<<<<<< HEAD
-
-=======
->>>>>>> 96d33d3c13 (initial main merge, hitting issues with 1001, most likely the qnn version changed the amount of memory allowed.)
   if (num_tokens == 1) {
     LOGS(logger, INFO) << "Using the MatMulNBits kernel" << do_op_validation;
 
@@ -717,6 +754,7 @@ Status MatMulNBitsOpBuilder::ProcessAttributesAndOutputs([[maybe_unused]]QnnMode
       qnn_model_wrapper.AddParamWrapper(std::move(axis_param));
       // if we are splitting the output, we need to concatenate the outputs.
       std::string concat_name = node_unit.Name() + "Concat";
+      LOGS(logger, INFO) << "Creating Concat node: " << concat_name;
       ORT_RETURN_IF_NOT(qnn_model_wrapper.CreateQnnNode(concat_name,
                                                         QNN_OP_PACKAGE_NAME_QTI_AISW,
                                                         QNN_OP_CONCAT,
@@ -838,41 +876,234 @@ Status MatMulNBitsOpBuilder::ProcessAttributesAndOutputs([[maybe_unused]]QnnMode
 
       std::vector<std::string> param_tensor_names_mul;
 
-      Qnn_Scalar_t t0 = QNN_SCALAR_INIT;
-      t0.dataType = QNN_DATATYPE_BOOL_8;
-      t0.bool8Value = 0;
-      QnnParamWrapper p0(node_unit.Index(), node_unit.Name() + std::to_string(i), QNN_OP_MAT_MUL_PARAM_TRANSPOSE_IN0, t0);
-      param_tensor_names_mul.push_back(p0.GetParamTensorName());
-      qnn_model_wrapper.AddParamWrapper(std::move(p0));
+      LOGS(logger, INFO) << "Consider tiling A tensors: " << hints.act_tile_count;
 
-      Qnn_Scalar_t t1 = QNN_SCALAR_INIT;
-      t1.dataType = QNN_DATATYPE_BOOL_8;
-      t1.bool8Value = 1;  // transpose the wieght input.
-      QnnParamWrapper p1(node_unit.Index(), node_unit.Name() + std::to_string(i), QNN_OP_MAT_MUL_PARAM_TRANSPOSE_IN1, t1);
-      param_tensor_names_mul.push_back(p1.GetParamTensorName());
-      qnn_model_wrapper.AddParamWrapper(std::move(p1));
-      std::string matmul_op_name = node_unit.Name() + "_mat_mul_" + std::to_string(i);
-      LOGS(logger, INFO) << "Creating MatMul node: " << matmul_op_name;
-      ORT_RETURN_IF_NOT(qnn_model_wrapper.CreateQnnNode(matmul_op_name, QNN_OP_PACKAGE_NAME_QTI_AISW,
-                                                        QNN_OP_MAT_MUL,
-                                                        {node_inputs[0].node_arg.Name(), weights_name}, {split_output_tensor_names[i]},
-                                                        std::move(param_tensor_names_mul), do_op_validation),
-                        "Failed to add fused Matmul node.");
+      // This is a problem. Why? It's not an initializer
+      // So we cannot directly use the values of the A tensor, because this is a runtime tensor. Duh.
+      // std::vector<uint8_t> a_values;
+      // ORT_RETURN_IF_ERROR(GetInitializerUint8TensorValuesMatMulNBits(
+      //     qnn_model_wrapper.GetGraphViewer(),
+      //     node_inputs[0].node_arg.Name(),
+      //     a_values,
+      //     logger));
+
+      if (hints.act_tile_size > 0 && num_tokens > 1) {
+        // TODO add activation tile here
+        ///////////////////////////////////////////////////////////////////////////////////////
+        ///////////////////////////////////////////////////////////////////////////////////////
+        ///////////////////////////////////////////////////////////////////////////////////////
+        LOGS(logger, INFO) << "Try to tile A by " << hints.act_tile_count;
+
+        // split the A input properly?
+        // and the output of the unpack? This doesn't need to be split yet
+        std::vector<std::string> a_tile_names;
+        for (size_t j = 0; j < hints.act_tile_count; ++j) {
+            std::string split_output_name =
+                node_unit.Name() + "Output_" + std::to_string(i) + "_split_" + std::to_string(j);
+
+            TensorInfo input_info = {};
+            ORT_RETURN_IF_ERROR(qnn_model_wrapper.GetTensorInfo(node_inputs[0], input_info));
+
+            const size_t last = input_info.shape.size() - 2;
+
+            input_info.shape[last] = hints.act_tile_size;
+
+            QnnTensorWrapper split_output_tensor(
+                split_output_name,
+                QNN_TENSOR_TYPE_NATIVE,
+                input_info.qnn_data_type,
+                input_info.quant_param.Copy(),
+                std::move(input_info.shape));
+
+            ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(split_output_tensor)),
+                              "Failed to add split output tensor");
+            LOGS(logger, INFO) << "Creating A tile tensor " << split_output_name  << " with shape size " << input_info.shape.size();
+            a_tile_names.push_back(split_output_name);
+            LOGS(logger, INFO) << "A tile tensor: " << a_tile_names[j];
+            // group_of_output_names.push_back(split_output_name);
+          }
+
+          // ----- Split params -----
+          std::vector<std::string> split_param_names;
+
+          // axis = last dim
+          int output_ndim = node_inputs[0].node_arg.Shape()->dim_size();
+          Qnn_Scalar_t axis_qnn_scalar = QNN_SCALAR_INIT;
+          axis_qnn_scalar.dataType = QNN_DATATYPE_UINT_32;
+          axis_qnn_scalar.int32Value = output_ndim - 2;
+
+          QnnParamWrapper axis_param(
+              node_unit.Index(), node_unit.Name() + "_split_axis_" + std::to_string(i),
+              QNN_OP_SPLIT_PARAM_AXIS, axis_qnn_scalar);
+          split_param_names.push_back(axis_param.GetParamTensorName());
+          qnn_model_wrapper.AddParamWrapper(std::move(axis_param));
+
+          // split_index = cumulative boundaries excluding 0
+          // e.g., for 1024 -> 4x256: {256, 512, 768}
+          // Not sure about this bit
+          std::vector<uint32_t> split_index;
+          int chunk = hints.act_tile_size;
+          split_index.reserve(hints.act_tile_count ? (hints.act_tile_count - 1) : 0);
+          for (uint32_t k = 1; k < hints.act_tile_count; ++k) {
+            split_index.push_back(k * chunk);
+          }
+
+          // The SPLIT_INDEX tensor is a 1-D param with length = split_index.size()
+          std::vector<uint32_t> split_dim{static_cast<uint32_t>(split_index.size())};
+          QnnParamWrapper split_param(
+              node_unit.Index(), node_unit.Name() + "_split_idx_" + std::to_string(i),
+              QNN_OP_SPLIT_PARAM_SPLIT_INDEX,
+              std::move(split_dim),
+              std::move(split_index));
+          split_param_names.push_back(split_param.GetParamTensorName());
+          qnn_model_wrapper.AddParamWrapper(std::move(split_param));
+
+          // Create Split node
+          LOGS(logger, INFO) << "Adding split node";
+          std::string split_name = node_unit.Name() + "Split_" + std::to_string(i);
+          // Make a copy of a_tile_names since CreateQnnNode takes ownership via std::move
+          std::vector<std::string> a_tile_names_copy = a_tile_names;
+          ORT_RETURN_IF_NOT(qnn_model_wrapper.CreateQnnNode(
+                                split_name,
+                                QNN_OP_PACKAGE_NAME_QTI_AISW,
+                                QNN_OP_SPLIT,
+                                {node_inputs[0].node_arg.Name()},    // input - A
+                                std::move(a_tile_names_copy),  // Move the copy, keep original
+                                std::move(split_param_names),
+                                do_op_validation),
+                            "Failed to add Split node.");
+
+
+        LOGS(logger, INFO) << "SPLIT NODE ADDED /-------------------------------------------";
+        LOGS(logger, INFO) << "a_tile_names size before loop: " << a_tile_names.size();
+        for (size_t j = 0; j < hints.act_tile_count; ++j) {
+
+          assert(hints.act_tile_size * hints.act_tile_count == num_tokens);
+          LOGS(logger, INFO) << "Activation tile size: " << hints.act_tile_size << ", tile count: " << hints.act_tile_count << ", num tokens: " << num_tokens;
+
+          // Unpack weights is NxK
+          // Activations are Nx...? we need this other number
+          // Actications are tokensxK, so split upon tokens
+          // Each chunk is therefore tile_size x K
+          // size_t tensor_elements = hints.act_tile_size * kernel_params.K.uint32Value;  // each chunk has target_out_split_size*in_size elements.
+
+          // process the B input.
+          // std::string a_input_name = node_unit.Name() + "A_" + std::to_string(j);
+
+          // // make a vector of vectors of size target_out_split_size.
+          // // No size reduction, since there's no data compression
+          // size_t a_chunk_size = tensor_elements;
+          // LOGS(logger, INFO) << "A chunk size: " << a_chunk_size;
+          // ;
+          // size_t a_offset = i * a_chunk_size;
+          // size_t a_end    = a_offset + a_chunk_size;
+
+          // if (a_offset >= a_end) {
+          //   ORT_THROW("split_count or split_size inconsistent with A tensor size");
+          // }
+
+          // // Activation tensor is a runtime tensor, so we try a dud set of values
+          // std::vector<uint8_t> a_values_split;//(a_values.begin() + a_offset,a_values.begin() + a_end);
+          // TensorInfo a_info = {};
+          // // print the original tensor info
+          // ORT_RETURN_IF_ERROR(qnn_model_wrapper.GetTensorInfo(node_inputs[0], a_info));
+          // // update the shape to reflect the split size
+          // a_info.shape[1] = hints.act_tile_size;  // update the shape to reflect the split size
+          // // might need to otherwise adjust size?
+          // LOGS(logger, INFO) << "A chunk shape: " << a_info.shape[0] << ", " << a_info.shape[1] << ", " << a_info.shape[2];
+
+          // // these two types are wildly different
+          // LOGS(logger, INFO) << "A input tensor: " << a_info.qnn_data_type << " against " << QNN_DATATYPE_UFIXED_POINT_16;
+
+          // QnnTensorWrapper a_input_tensor(
+          //     a_input_name,
+          //     QNN_TENSOR_TYPE_NATIVE,  // It's a regular internal tensor, think this is the right one
+          //     QNN_DATATYPE_UFIXED_POINT_16, // activations are quint16
+          //     std::move(a_info.quant_param),  // If unquantized, otherwise pass scale/offset
+          //     std::move(a_info.shape),
+          //     std::move(a_values_split)  // your replacement buffer. Try just a dud buffer for now
+          // );
+
+          // // add the tensor to the model wrapper.
+          // ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(a_input_tensor)), "Failed to add input");
+          // split_a_tensor_names.push_back(a_input_name);
+
+          // // Fix the output tensor too
+          // split_output_tensor_names[i];
+
+
+          // Now create the matmul node for this tensor
+          // Clear param_tensor_names_mul for each tile iteration to avoid duplicates
+          param_tensor_names_mul.clear();
+
+          Qnn_Scalar_t t0 = QNN_SCALAR_INIT;
+          t0.dataType = QNN_DATATYPE_BOOL_8;
+          t0.bool8Value = 0;
+          QnnParamWrapper p0(node_unit.Index(), node_unit.Name() + std::to_string(i) + std::to_string(j), QNN_OP_MAT_MUL_PARAM_TRANSPOSE_IN0, t0);
+          param_tensor_names_mul.push_back(p0.GetParamTensorName());
+          qnn_model_wrapper.AddParamWrapper(std::move(p0));
+
+          Qnn_Scalar_t t1 = QNN_SCALAR_INIT;
+          t1.dataType = QNN_DATATYPE_BOOL_8;
+          t1.bool8Value = 1;  // transpose the wieght input.
+          QnnParamWrapper p1(node_unit.Index(), node_unit.Name() + std::to_string(i) + std::to_string(j), QNN_OP_MAT_MUL_PARAM_TRANSPOSE_IN1, t1);
+          param_tensor_names_mul.push_back(p1.GetParamTensorName());
+          qnn_model_wrapper.AddParamWrapper(std::move(p1));
+          std::string matmul_op_name = node_unit.Name() + "_mat_mul_" + std::to_string(i) + "_+_" + std::to_string(j);
+
+          // a_tile_names[j] cannot be accessed. Why?
+          LOGS(logger, INFO) << "Created name var " << a_tile_names[j];
+          LOGS(logger, INFO) << "Creating MatMul node: " << matmul_op_name << " with tensors " << a_tile_names[j] << " and " << weights_name << " outputting to " << split_output_tensor_names[j];
+          ORT_RETURN_IF_NOT(qnn_model_wrapper.CreateQnnNode(matmul_op_name, QNN_OP_PACKAGE_NAME_QTI_AISW,
+                                                            QNN_OP_MAT_MUL,
+                                                            {a_tile_names[j], weights_name}, {split_output_tensor_names[j]},
+                                                            std::move(param_tensor_names_mul), do_op_validation),
+                            "Failed to add fused Matmul node.");
+          LOGS(logger, INFO) << "Created matmul";
+        }
+        // Something is immediately bad upon adding this
+      }
+      else
+      {
+         Qnn_Scalar_t t0 = QNN_SCALAR_INIT;
+        t0.dataType = QNN_DATATYPE_BOOL_8;
+        t0.bool8Value = 0;
+        QnnParamWrapper p0(node_unit.Index(), node_unit.Name() + std::to_string(i), QNN_OP_MAT_MUL_PARAM_TRANSPOSE_IN0, t0);
+        param_tensor_names_mul.push_back(p0.GetParamTensorName());
+        qnn_model_wrapper.AddParamWrapper(std::move(p0));
+
+        Qnn_Scalar_t t1 = QNN_SCALAR_INIT;
+        t1.dataType = QNN_DATATYPE_BOOL_8;
+        t1.bool8Value = 1;  // transpose the wieght input.
+        QnnParamWrapper p1(node_unit.Index(), node_unit.Name() + std::to_string(i), QNN_OP_MAT_MUL_PARAM_TRANSPOSE_IN1, t1);
+        param_tensor_names_mul.push_back(p1.GetParamTensorName());
+        qnn_model_wrapper.AddParamWrapper(std::move(p1));
+        std::string matmul_op_name = node_unit.Name() + "_mat_mul_" + std::to_string(i);
+        LOGS(logger, INFO) << "Creating MatMul node: " << matmul_op_name;
+        ORT_RETURN_IF_NOT(qnn_model_wrapper.CreateQnnNode(matmul_op_name, QNN_OP_PACKAGE_NAME_QTI_AISW,
+                                                          QNN_OP_MAT_MUL,
+                                                          {node_inputs[0].node_arg.Name(), weights_name}, {split_output_tensor_names[i]},
+                                                          std::move(param_tensor_names_mul), do_op_validation),
+                          "Failed to add fused Matmul node.");
+      }
+
+      // So it tries to make this, and THEN immediately things are bad
     }
 
-    if (hints.split_count > 1) {
+    if (hints.split_count > 1 || hints.act_tile_count > 1) {
       LOGS(logger, INFO) << "Concatenating the outputs of the MatMul nodes.";
       // now we need to add the output node, which is a concat of all the matmul outputs.
       std::vector<std::string> param_tensor_names_concat;
       int output_ndim = node_outputs[0].node_arg.Shape()->dim_size();
-      int32_t default_axis = output_ndim - 1;
+      int32_t default_axis = 1;//output_ndim - 1;
+      LOGS(logger, INFO) << "Concatenating on axis: " << default_axis << " of output ndim: " << output_ndim;
       Qnn_Scalar_t axis_qnn_scalar = QNN_SCALAR_INIT;
       axis_qnn_scalar.dataType = QNN_DATATYPE_INT_32;
       axis_qnn_scalar.int32Value = default_axis;
       QnnParamWrapper axis_param(node_unit.Index(), node_unit.Name(), QNN_OP_SOFTMAX_PARAM_AXIS, axis_qnn_scalar);
       param_tensor_names_concat.push_back(axis_param.GetParamTensorName());
       qnn_model_wrapper.AddParamWrapper(std::move(axis_param));
-
+      LOGS(logger, INFO) << "Creating Concat node on the output: " << node_unit.Name() + "Concat";
       ORT_RETURN_IF_NOT(qnn_model_wrapper.CreateQnnNode(node_unit.Name() + "_concat",
                                                         QNN_OP_PACKAGE_NAME_QTI_AISW,
                                                         QNN_OP_CONCAT,
