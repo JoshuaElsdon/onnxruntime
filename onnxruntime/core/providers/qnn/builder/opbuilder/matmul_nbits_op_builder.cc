@@ -542,28 +542,76 @@ Status MatMulNBitsOpBuilder::ProcessAttributesAndOutputs([[maybe_unused]]QnnMode
 
 
   std::vector<std::string> split_output_tensor_names;
+  std::vector<std::string> intermediate_concat_output_names;
   if (hints.split_count > 1) {
-    for (size_t i = 0; i < hints.split_count; ++i) {
-        TensorInfo output_info = {};
-      ORT_RETURN_IF_ERROR(qnn_model_wrapper.GetTensorInfo(node_outputs[0], output_info));
-      output_info.shape[output_info.shape.size()-1] = hints.split_size;
-      // make some output tensors.
-      std::string output_name = node_unit.Name() + "Output_" + std::to_string(i);
-      split_output_tensor_names.push_back(output_name);
-      LOGS(logger, INFO) << "Added output tensor: " << output_name << " with shape_size " << output_info.shape.size();
-      for (size_t j = 0; j < output_info.shape.size(); ++j) {
-        LOGS(logger, INFO) << "Output tensor shape[" << j << "]: " << output_info.shape[j];
+    if (hints.act_tile_count == 1) {
+      for (size_t i = 0; i < hints.split_count; ++i) {
+          TensorInfo output_info = {};
+        ORT_RETURN_IF_ERROR(qnn_model_wrapper.GetTensorInfo(node_outputs[0], output_info));
+        output_info.shape[output_info.shape.size()-1] = hints.split_size;
+        // make some output tensors.
+        std::string output_name = node_unit.Name() + "Output_" + std::to_string(i);
+        split_output_tensor_names.push_back(output_name);
+        LOGS(logger, INFO) << "Added output tensor: " << output_name << " with shape_size " << output_info.shape.size();
+        for (size_t j = 0; j < output_info.shape.size(); ++j) {
+          LOGS(logger, INFO) << "Output tensor shape[" << j << "]: " << output_info.shape[j];
+        }
+        QnnTensorWrapper output_tensor_split(
+            output_name,
+            QNN_TENSOR_TYPE_NATIVE,
+            output_info.qnn_data_type,
+            std::move(output_info.quant_param),  // If unquantized, otherwise pass scale/offset
+            std::move(output_info.shape));
+        // add the tensor to the model wrapper.
+        ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(output_tensor_split)), "Failed to add output tensor");
+
+
       }
-      QnnTensorWrapper output_tensor_split(
-          output_name,
-          QNN_TENSOR_TYPE_NATIVE,
-          output_info.qnn_data_type,
-          std::move(output_info.quant_param),  // If unquantized, otherwise pass scale/offset
-          std::move(output_info.shape));
-      // add the tensor to the model wrapper.
-      ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(output_tensor_split)), "Failed to add output tensor");
+    } else if (hints.act_tile_count > 1) {
+      // if both split_count and act_tile_count are > 1, we need to create the intermediate output tensors.
+      for (size_t i = 0; i < hints.split_count; ++i) {
+        for (size_t j = 0; j < hints.act_tile_count; ++j) {
+            TensorInfo output_info = {};
+          ORT_RETURN_IF_ERROR(qnn_model_wrapper.GetTensorInfo(node_outputs[0], output_info));
+          output_info.shape[output_info.shape.size()-1] = hints.split_size;
+          output_info.shape[output_info.shape.size()-2] = hints.act_tile_size;
+
+          // make some output tensors.
+          std::string output_name = node_unit.Name() + "Output_split_" + std::to_string(i) + "_tile_" + std::to_string(j);
+          split_output_tensor_names.push_back(output_name);
+          LOGS(logger, INFO) << "Added output tensor: " << output_name << " with shape_size " << output_info.shape.size();
+          for (size_t k = 0; k < output_info.shape.size(); ++k) {
+            LOGS(logger, INFO) << "Output tensor shape[" << k << "]: " << output_info.shape[k];
+          }
+          QnnTensorWrapper output_tensor_split(
+              output_name,
+              QNN_TENSOR_TYPE_NATIVE,
+              output_info.qnn_data_type,
+              std::move(output_info.quant_param),  // If unquantized, otherwise pass scale/offset
+              std::move(output_info.shape));
+          // add the tensor to the model wrapper.
+          ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(output_tensor_split)), "Failed to add output tensor");
 
 
+        }
+
+        // since we have a double concat, these are the intermediary concat outputs of each set of inner for loops above
+        TensorInfo output_info = {};
+        ORT_RETURN_IF_ERROR(qnn_model_wrapper.GetTensorInfo(node_outputs[0], output_info));
+        output_info.shape[output_info.shape.size()-1] = hints.split_size;
+        output_info.shape[output_info.shape.size()-2] = hints.act_tile_size*hints.act_tile_count;
+        std::string output_name = node_unit.Name() + "Output_concat_" + std::to_string(i);
+        intermediate_concat_output_names.push_back(output_name);
+
+        QnnTensorWrapper output_tensor_split(
+              output_name,
+              QNN_TENSOR_TYPE_NATIVE,
+              output_info.qnn_data_type,
+              std::move(output_info.quant_param),  // If unquantized, otherwise pass scale/offset
+              std::move(output_info.shape));
+          // add the tensor to the model wrapper.
+          ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(output_tensor_split)), "Failed to add output tensor");
+      }
     }
   } else if (hints.act_tile_count > 1) {
     // if split_count is 1, but act_tile_count > 1, we still need to create the intermediate output tensors.
@@ -850,6 +898,15 @@ Status MatMulNBitsOpBuilder::ProcessAttributesAndOutputs([[maybe_unused]]QnnMode
 
     LOGS(logger, INFO) << "Scale: " << scale << ", Offset: " << offset;
 
+    // If we tile along activations, we need to concat the outputs along two dimensions
+    // collect the intermediary output names in this case
+    // If this isn't happening, then we just default
+    std::vector<std::string> tiling_output_names = split_output_tensor_names;
+    if (hints.act_tile_count > 1)
+    {
+      tiling_output_names.clear();
+    }
+
     // now we make for loop for each of the split weights, scales and zeros tensors.
     for (size_t i = 0; i < hints.split_count; ++i) {
       LOGS(logger, INFO) << "Creating UnpackWeightsNBits node for split: " << i;
@@ -976,6 +1033,7 @@ Status MatMulNBitsOpBuilder::ProcessAttributesAndOutputs([[maybe_unused]]QnnMode
 
         LOGS(logger, INFO) << "SPLIT NODE ADDED /-------------------------------------------";
         LOGS(logger, INFO) << "a_tile_names size before loop: " << a_tile_names.size();
+        std::vector<std::string> matmul_output_names;
         for (size_t j = 0; j < hints.act_tile_count; ++j) {
 
           assert(hints.act_tile_size * hints.act_tile_count == num_tokens);
@@ -1056,12 +1114,37 @@ Status MatMulNBitsOpBuilder::ProcessAttributesAndOutputs([[maybe_unused]]QnnMode
           LOGS(logger, INFO) << "Creating MatMul node: " << matmul_op_name << " with tensors " << a_tile_names[j] << " and " << weights_name << " outputting to " << split_output_tensor_names[j];
           ORT_RETURN_IF_NOT(qnn_model_wrapper.CreateQnnNode(matmul_op_name, QNN_OP_PACKAGE_NAME_QTI_AISW,
                                                             QNN_OP_MAT_MUL,
-                                                            {a_tile_names[j], weights_name}, {split_output_tensor_names[j]},
+                                                            {a_tile_names[j], weights_name}, {split_output_tensor_names[i*hints.act_tile_count + j]},
                                                             std::move(param_tensor_names_mul), do_op_validation),
                             "Failed to add fused Matmul node.");
           LOGS(logger, INFO) << "Created matmul";
+          matmul_output_names.push_back(split_output_tensor_names[i*hints.act_tile_count + j]);
         }
-        // Something is immediately bad upon adding this
+
+
+        // Need to concat all the matmul outputs here
+        // concat on height axis
+        LOGS(logger, INFO) << "Concatenating the outputs of the MatMul nodes on height.";
+        // now we need to add the output node, which is a concat of all the matmul outputs.
+        std::vector<std::string> param_tensor_names_concat;
+        output_ndim = node_outputs[0].node_arg.Shape()->dim_size();
+        int32_t default_axis = 1;//output_ndim - 1;
+        LOGS(logger, INFO) << "Concatenating on axis: " << default_axis << " of output ndim: " << output_ndim;
+        axis_qnn_scalar = QNN_SCALAR_INIT;
+        axis_qnn_scalar.dataType = QNN_DATATYPE_UINT_32;
+        axis_qnn_scalar.int32Value = default_axis;
+        QnnParamWrapper concat_axis_param(node_unit.Index(), node_unit.Name() + "_inner_concat_" + std::to_string(i), QNN_OP_CONCAT_PARAM_AXIS, axis_qnn_scalar);
+        param_tensor_names_concat.push_back(concat_axis_param.GetParamTensorName());
+        qnn_model_wrapper.AddParamWrapper(std::move(concat_axis_param));
+        LOGS(logger, INFO) << "Creating Concat node on the output: " << node_unit.Name() + "Concat_inner_" + std::to_string(i);
+        ORT_RETURN_IF_NOT(qnn_model_wrapper.CreateQnnNode(node_unit.Name() + "_concat_inner_" + std::to_string(i),
+                                                          QNN_OP_PACKAGE_NAME_QTI_AISW,
+                                                          QNN_OP_CONCAT,
+                                                          std::move(matmul_output_names),
+                                                          {intermediate_concat_output_names[i]},
+                                                          std::move(param_tensor_names_concat),
+                                                          do_op_validation),
+                          "Failed to add fused Concat node.");
       }
       else
       {
@@ -1090,7 +1173,36 @@ Status MatMulNBitsOpBuilder::ProcessAttributesAndOutputs([[maybe_unused]]QnnMode
       // So it tries to make this, and THEN immediately things are bad
     }
 
-    if (hints.split_count > 1 || hints.act_tile_count > 1) {
+    // Need to do a double concat here
+    // First concat on the height axis, then on the width axis from the weights
+    // Or the other way around? Not sure what is best.
+    // for now, height then width:
+    // For each height set
+
+    if (hints.split_count > 1 && hints.act_tile_count > 1) {
+      LOGS(logger, INFO) << "Concatenating the outputs of the MatMul nodes.";
+      // now we need to add the output node, which is a concat of all the matmul outputs.
+      std::vector<std::string> param_tensor_names_concat;
+      int output_ndim = node_outputs[0].node_arg.Shape()->dim_size();
+      int32_t default_axis = output_ndim - 1;
+      LOGS(logger, INFO) << "Concatenating on axis: " << default_axis << " of output ndim: " << output_ndim;
+      Qnn_Scalar_t axis_qnn_scalar = QNN_SCALAR_INIT;
+      axis_qnn_scalar.dataType = QNN_DATATYPE_UINT_32;
+      axis_qnn_scalar.int32Value = default_axis;
+      QnnParamWrapper axis_param(node_unit.Index(), node_unit.Name() + "_outer_concat", QNN_OP_CONCAT_PARAM_AXIS, axis_qnn_scalar);
+      param_tensor_names_concat.push_back(axis_param.GetParamTensorName());
+      qnn_model_wrapper.AddParamWrapper(std::move(axis_param));
+      LOGS(logger, INFO) << "Creating Concat node on the output: " << node_unit.Name() + "Concat_outer";
+      ORT_RETURN_IF_NOT(qnn_model_wrapper.CreateQnnNode(node_unit.Name() + "_concat_outer",
+                                                        QNN_OP_PACKAGE_NAME_QTI_AISW,
+                                                        QNN_OP_CONCAT,
+                                                        std::move(intermediate_concat_output_names),
+                                                        {node_outputs[0].node_arg.Name()},
+                                                        std::move(param_tensor_names_concat),
+                                                        do_op_validation),
+                        "Failed to add final Concat node.");
+    } else if (hints.split_count > 1)
+    {
       LOGS(logger, INFO) << "Concatenating the outputs of the MatMul nodes.";
       // now we need to add the output node, which is a concat of all the matmul outputs.
       std::vector<std::string> param_tensor_names_concat;
