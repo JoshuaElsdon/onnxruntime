@@ -246,12 +246,6 @@ Status MatMulNBitsOpBuilder::ProcessInputs([[maybe_unused]]QnnModelWrapper& qnn_
   // get the hints, shuffle, scratch and split size etc.
   [[maybe_unused]] QnnModelWrapper::ParsedHints hints = qnn_model_wrapper.parse_hints(kernel_params.N.uint32Value, num_tokens, logger);
 
-
-
-
-
-
-
   std::vector<std::string> split_b_tensor_names;
   std::vector<std::string> split_scales_tensor_names;
   std::vector<std::string> split_zeros_tensor_names;
@@ -506,17 +500,8 @@ Status MatMulNBitsOpBuilder::ProcessAttributesAndOutputs([[maybe_unused]]QnnMode
   [[maybe_unused]] int64_t num_tokens = node_inputs[0].node_arg.Shape()->dim(num_A_dims - 2).dim_value();
   [[maybe_unused]] QnnModelWrapper::ParsedHints hints = qnn_model_wrapper.parse_hints(kernel_params.N.uint32Value, num_tokens, logger);
                                                             // get the output tensor information
-
-
   std::vector<NodeUnitIODef> node_outputs = node_unit.Outputs();
   ORT_RETURN_IF(node_outputs.size() != 1, "MatMulNBits node should have exactly one output, but found ", node_outputs.size());
-
-
-
-
-
-
-
 
   QnnTensorWrapper output_tensor;
   ORT_RETURN_IF_ERROR(qnn_model_wrapper.MakeTensorWrapper(node_outputs[0], output_tensor));
@@ -540,7 +525,6 @@ Status MatMulNBitsOpBuilder::ProcessAttributesAndOutputs([[maybe_unused]]QnnMode
       zero_values_orig,
       logger));
 
-
   std::vector<std::string> split_output_tensor_names;
   std::vector<std::string> intermediate_concat_output_names;
   if (hints.split_count > 1) {
@@ -549,6 +533,17 @@ Status MatMulNBitsOpBuilder::ProcessAttributesAndOutputs([[maybe_unused]]QnnMode
           TensorInfo output_info = {};
         ORT_RETURN_IF_ERROR(qnn_model_wrapper.GetTensorInfo(node_outputs[0], output_info));
         output_info.shape[output_info.shape.size()-1] = hints.split_size;
+
+        if (hints.crouton)
+        {
+          output_info.shape[output_info.shape.size()-3] = 8;
+          output_info.shape[output_info.shape.size()-2] = output_info.shape[output_info.shape.size()-2] / 8;
+
+          // this one gets tiled
+          //output_info.shape[output_info.shape.size()-2] = output_info.shape[output_info.shape.size()-2] / 8;
+          LOGS(logger, INFO) << "Crouton tiling applied to output tensor split, shape: " << output_info.shape[0] << "," << output_info.shape[1] << "," << output_info.shape[2];
+        }
+
         // make some output tensors.
         std::string output_name = node_unit.Name() + "Output_" + std::to_string(i);
         split_output_tensor_names.push_back(output_name);
@@ -576,6 +571,16 @@ Status MatMulNBitsOpBuilder::ProcessAttributesAndOutputs([[maybe_unused]]QnnMode
           output_info.shape[output_info.shape.size()-1] = hints.split_size;
           output_info.shape[output_info.shape.size()-2] = hints.act_tile_size;
 
+          if (hints.crouton)
+        {
+          // With crouton: activations are (8, act_tile_size/8, K), weights are (8, split_size/8, K)
+          // After matmul: (8, act_tile_size/8, K) × (K, split_size/8) = (8, act_tile_size/8, split_size/8)
+          output_info.shape[output_info.shape.size()-3] = 8;
+          output_info.shape[output_info.shape.size()-2] = hints.act_tile_size / 8;
+          output_info.shape[output_info.shape.size()-1] = hints.split_size / 8;
+          LOGS(logger, INFO) << "Crouton tiling applied to output tensor split, shape: " << output_info.shape[0] << "," << output_info.shape[1] << "," << output_info.shape[2];
+        }
+
           // make some output tensors.
           std::string output_name = node_unit.Name() + "Output_split_" + std::to_string(i) + "_tile_" + std::to_string(j);
           split_output_tensor_names.push_back(output_name);
@@ -600,6 +605,13 @@ Status MatMulNBitsOpBuilder::ProcessAttributesAndOutputs([[maybe_unused]]QnnMode
         ORT_RETURN_IF_ERROR(qnn_model_wrapper.GetTensorInfo(node_outputs[0], output_info));
         output_info.shape[output_info.shape.size()-1] = hints.split_size;
         output_info.shape[output_info.shape.size()-2] = hints.act_tile_size*hints.act_tile_count;
+        if (hints.crouton)
+        {
+          output_info.shape[output_info.shape.size()-3] = 8;
+          output_info.shape[output_info.shape.size()-2] = (hints.act_tile_size * hints.act_tile_count) / 8;
+          output_info.shape[output_info.shape.size()-1] = hints.split_size / 8;
+          // LOGS(logger, INFO) << "Crouton tiling applied to A tensor split, shape: " << output_info.shape[0] << "," << output_info.shape[1] << "," << output_info.shape[2];
+        }
         std::string output_name = node_unit.Name() + "Output_concat_" + std::to_string(i);
         intermediate_concat_output_names.push_back(output_name);
 
@@ -620,7 +632,12 @@ Status MatMulNBitsOpBuilder::ProcessAttributesAndOutputs([[maybe_unused]]QnnMode
       ORT_RETURN_IF_ERROR(qnn_model_wrapper.GetTensorInfo(node_outputs[0], output_info));
       output_info.shape[output_info.shape.size()-2] = hints.act_tile_size;
 
-      // Will this have the effect I want?
+      if (hints.crouton)
+      {
+        output_info.shape[1] = 8;
+        output_info.shape[2] = output_info.shape[2] / 8;
+        LOGS(logger, INFO) << "Crouton tiling applied to A tensor split, shape: " << output_info.shape[0] << "," << output_info.shape[1] << "," << output_info.shape[2] << "," << output_info.shape[3];
+      }
 
       // make some output tensors.
       std::string output_name = node_unit.Name() + "Output_tile_" + std::to_string(i);
@@ -913,6 +930,15 @@ Status MatMulNBitsOpBuilder::ProcessAttributesAndOutputs([[maybe_unused]]QnnMode
       // create the weights tensor name
       std::string weights_name = node_unit.Name() + "_weights_" + std::to_string(i);
       std::vector<uint32_t> weights_shape = {hints.split_size, kernel_params.K.uint32Value};
+
+      if (hints.crouton)
+      {
+        // With crouton layout, reshape weights to match activation's batch dimension
+        // This enables efficient batched matmul where each of the 8 batches multiplies independently
+        weights_shape = {8, hints.split_size / 8, kernel_params.K.uint32Value};
+        LOGS(logger, INFO) << "Crouton tiling applied to weights tensor, shape: " << weights_shape[0] << "," << weights_shape[1] << "," << weights_shape[2];
+      }
+
       QnnTensorWrapper weights_tensor(weights_name,
                                       QNN_TENSOR_TYPE_NATIVE,
                                       QNN_DATATYPE_UFIXED_POINT_8,
@@ -955,80 +981,157 @@ Status MatMulNBitsOpBuilder::ProcessAttributesAndOutputs([[maybe_unused]]QnnMode
         // and the output of the unpack? This doesn't need to be split yet
         std::vector<std::string> a_tile_names;
         for (size_t j = 0; j < hints.act_tile_count; ++j) {
-            std::string split_output_name =
-                node_unit.Name() + "Output_" + std::to_string(i) + "_split_" + std::to_string(j);
+          std::string split_output_name =
+              node_unit.Name() + "Output_" + std::to_string(i) + "_split_" + std::to_string(j);
 
-            TensorInfo input_info = {};
-            ORT_RETURN_IF_ERROR(qnn_model_wrapper.GetTensorInfo(node_inputs[0], input_info));
+          TensorInfo input_info = {};
+          ORT_RETURN_IF_ERROR(qnn_model_wrapper.GetTensorInfo(node_inputs[0], input_info));
 
-            const size_t last = input_info.shape.size() - 2;
+          const size_t last = input_info.shape.size() - 2;
 
-            input_info.shape[last] = hints.act_tile_size;
+          input_info.shape[last] = hints.act_tile_size;
 
-            QnnTensorWrapper split_output_tensor(
-                split_output_name,
-                QNN_TENSOR_TYPE_NATIVE,
-                input_info.qnn_data_type,
-                input_info.quant_param.Copy(),
-                std::move(input_info.shape));
+          if (hints.crouton)
+          {
 
-            ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(split_output_tensor)),
-                              "Failed to add split output tensor");
-            LOGS(logger, INFO) << "Creating A tile tensor " << split_output_name  << " with shape size " << input_info.shape.size();
-            a_tile_names.push_back(split_output_name);
-            LOGS(logger, INFO) << "A tile tensor: " << a_tile_names[j];
-            // group_of_output_names.push_back(split_output_name);
+            // add in RESHAPE node to go from 1x1024x1024 to 8x128x1024
+            // and then create the split outputs
+
+
+
+            input_info.shape[input_info.shape.size() - 3] = 8;
+            input_info.shape[input_info.shape.size() - 2] = input_info.shape[input_info.shape.size() - 2] / 8;
+            LOGS(logger, INFO) << "Crouton tiling applied to A tensor split, shape: " << input_info.shape[0] << "," << input_info.shape[1] << "," << input_info.shape[2] << "," << input_info.shape[3];
+
           }
 
-          // ----- Split params -----
-          std::vector<std::string> split_param_names;
+          QnnTensorWrapper split_output_tensor(
+              split_output_name,
+              QNN_TENSOR_TYPE_NATIVE,
+              input_info.qnn_data_type,
+              input_info.quant_param.Copy(),
+              std::move(input_info.shape));
 
-          // axis = last dim
-          int output_ndim = node_inputs[0].node_arg.Shape()->dim_size();
-          Qnn_Scalar_t axis_qnn_scalar = QNN_SCALAR_INIT;
-          axis_qnn_scalar.dataType = QNN_DATATYPE_UINT_32;
-          axis_qnn_scalar.int32Value = output_ndim - 2;
+          ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(split_output_tensor)),
+                            "Failed to add split output tensor");
+          LOGS(logger, INFO) << "Creating A tile tensor " << split_output_name  << " with shape size " << input_info.shape.size();
+          a_tile_names.push_back(split_output_name);
+          LOGS(logger, INFO) << "A tile tensor: " << a_tile_names[j];
+          // group_of_output_names.push_back(split_output_name);
+        }
 
-          QnnParamWrapper axis_param(
-              node_unit.Index(), node_unit.Name() + "_split_axis_" + std::to_string(i),
-              QNN_OP_SPLIT_PARAM_AXIS, axis_qnn_scalar);
-          split_param_names.push_back(axis_param.GetParamTensorName());
-          qnn_model_wrapper.AddParamWrapper(std::move(axis_param));
+        // ----- Split params -----
+        std::vector<std::string> split_param_names;
 
-          // split_index = cumulative boundaries excluding 0
-          // e.g., for 1024 -> 4x256: {256, 512, 768}
-          // Not sure about this bit
-          std::vector<uint32_t> split_index;
-          int chunk = hints.act_tile_size;
-          split_index.reserve(hints.act_tile_count ? (hints.act_tile_count - 1) : 0);
-          for (uint32_t k = 1; k < hints.act_tile_count; ++k) {
-            split_index.push_back(k * chunk);
-          }
+        // axis = last dim
+        int output_ndim = node_inputs[0].node_arg.Shape()->dim_size();
+        Qnn_Scalar_t axis_qnn_scalar = QNN_SCALAR_INIT;
+        axis_qnn_scalar.dataType = QNN_DATATYPE_UINT_32;
+        axis_qnn_scalar.int32Value = output_ndim - 2;
 
-          // The SPLIT_INDEX tensor is a 1-D param with length = split_index.size()
-          std::vector<uint32_t> split_dim{static_cast<uint32_t>(split_index.size())};
-          QnnParamWrapper split_param(
-              node_unit.Index(), node_unit.Name() + "_split_idx_" + std::to_string(i),
-              QNN_OP_SPLIT_PARAM_SPLIT_INDEX,
-              std::move(split_dim),
-              std::move(split_index));
-          split_param_names.push_back(split_param.GetParamTensorName());
-          qnn_model_wrapper.AddParamWrapper(std::move(split_param));
+        QnnParamWrapper axis_param(
+            node_unit.Index(), node_unit.Name() + "_split_axis_" + std::to_string(i),
+            QNN_OP_SPLIT_PARAM_AXIS, axis_qnn_scalar);
+        split_param_names.push_back(axis_param.GetParamTensorName());
+        qnn_model_wrapper.AddParamWrapper(std::move(axis_param));
 
-          // Create Split node
-          LOGS(logger, INFO) << "Adding split node";
-          std::string split_name = node_unit.Name() + "Split_" + std::to_string(i);
-          // Make a copy of a_tile_names since CreateQnnNode takes ownership via std::move
-          std::vector<std::string> a_tile_names_copy = a_tile_names;
+        // split_index = cumulative boundaries excluding 0
+        // e.g., for 1024 -> 4x256: {256, 512, 768}
+        // If crouton layout is used, dimension was reshaped and reduced by factor of 8
+        std::vector<uint32_t> split_index;
+        int chunk = hints.crouton ? (hints.act_tile_size / 8) : hints.act_tile_size;
+        split_index.reserve(hints.act_tile_count ? (hints.act_tile_count - 1) : 0);
+        for (uint32_t k = 1; k < hints.act_tile_count; ++k) {
+          split_index.push_back(k * chunk);
+        }
+
+        // The SPLIT_INDEX tensor is a 1-D param with length = split_index.size()
+        std::vector<uint32_t> split_dim{static_cast<uint32_t>(split_index.size())};
+        QnnParamWrapper split_param(
+            node_unit.Index(), node_unit.Name() + "_split_idx_" + std::to_string(i),
+            QNN_OP_SPLIT_PARAM_SPLIT_INDEX,
+            std::move(split_dim),
+            std::move(split_index));
+        split_param_names.push_back(split_param.GetParamTensorName());
+        qnn_model_wrapper.AddParamWrapper(std::move(split_param));
+
+        auto AinputName = node_inputs[0].node_arg.Name();
+        if (hints.crouton)
+        {
+          // create reshape node
+          // QnnNodeWrapper reshape_node(
+          //     node_unit.Index(), node_unit.Name() + "_A_reshape_" + std::to_string(i),
+          //     QNN_OP_RESHAPE,
+          //     {AinputName},
+          //     {AinputName + "_reshaped" + std::t-_string(i)});
+          // ORT_RETURN_IF_NOT(qnn_model_wrapper.AddNodeWrapper(std::move(reshape_node)),
+          //                   "Failed to add Reshape node.");
+
+          LOGS(logger, INFO) << "Creating Reshape node for A tensor before split for Crouton layout, reshaping " << AinputName;
+
+          auto newOutputName = AinputName + "_reshaped_" + std::to_string(i);
+
+          LOGS(logger, INFO) << "Got new output name: " << newOutputName;
+
+          TensorInfo input_info = {};
+          ORT_RETURN_IF_ERROR(qnn_model_wrapper.GetTensorInfo(node_inputs[0], input_info));
+          auto oldShape = input_info.shape;
+
+          LOGS(logger, INFO) << "Got old input shape size: " << input_info.shape.size();
+
+
+          input_info.shape[input_info.shape.size() - 2] = input_info.shape[input_info.shape.size() - 2]/8;
+          input_info.shape[input_info.shape.size() - 3] = 8;
+
+          LOGS(logger, INFO) << "adjusted shape to now: " << input_info.shape[0] << ", " << input_info.shape[1] << ", " << input_info.shape[2];
+
+          // SO we cannot create this tensor?
+          QnnTensorWrapper reshape_output_tensor(
+              newOutputName,
+              QNN_TENSOR_TYPE_NATIVE,
+              input_info.qnn_data_type,
+              input_info.quant_param.Copy(),
+              std::move(input_info.shape));
+
+          ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(reshape_output_tensor)),
+                            "Failed to add reshape output tensor");
+
+          LOGS(logger, INFO) << "Created reshape output tensor wrapper";
+
+          // because we std::moved the damn array
+          // LOGS(logger, INFO) << "Reshape from " << oldShape[0] << ", " << oldShape[1] << ", " << oldShape[2] << " to " << input_info.shape[0] << ", " << input_info.shape[1] << ", " << input_info.shape[2];
+
           ORT_RETURN_IF_NOT(qnn_model_wrapper.CreateQnnNode(
-                                split_name,
-                                QNN_OP_PACKAGE_NAME_QTI_AISW,
-                                QNN_OP_SPLIT,
-                                {node_inputs[0].node_arg.Name()},    // input - A
-                                std::move(a_tile_names_copy),  // Move the copy, keep original
-                                std::move(split_param_names),
-                                do_op_validation),
-                            "Failed to add Split node.");
+                              node_unit.Name() + "_A_reshape_" + std::to_string(i),
+                              QNN_OP_PACKAGE_NAME_QTI_AISW,
+                              QNN_OP_RESHAPE,
+                              {AinputName},
+                              {newOutputName},
+                              {},
+                              do_op_validation),
+                          "Failed to add resahape node.");
+
+          AinputName = newOutputName;
+          LOGS(logger, INFO) << "Created reshape node";
+
+          // is it failing on the creation of the reshape node because the input name tensor doesn't exist?
+          // or the next node?
+        }
+
+        // Create Split node
+        LOGS(logger, INFO) << "Adding split node";
+        std::string split_name = node_unit.Name() + "Split_" + std::to_string(i);
+        // Make a copy of a_tile_names since CreateQnnNode takes ownership via std::move
+        std::vector<std::string> a_tile_names_copy = a_tile_names;
+        ORT_RETURN_IF_NOT(qnn_model_wrapper.CreateQnnNode(
+                              split_name,
+                              QNN_OP_PACKAGE_NAME_QTI_AISW,
+                              QNN_OP_SPLIT,
+                              {AinputName},    // input - A
+                              std::move(a_tile_names_copy),  // Move the copy, keep original
+                              std::move(split_param_names),
+                              do_op_validation),
+                          "Failed to add Split node.");
 
 
         LOGS(logger, INFO) << "SPLIT NODE ADDED /-------------------------------------------";
@@ -1038,56 +1141,6 @@ Status MatMulNBitsOpBuilder::ProcessAttributesAndOutputs([[maybe_unused]]QnnMode
 
           assert(hints.act_tile_size * hints.act_tile_count == num_tokens);
           LOGS(logger, INFO) << "Activation tile size: " << hints.act_tile_size << ", tile count: " << hints.act_tile_count << ", num tokens: " << num_tokens;
-
-          // Unpack weights is NxK
-          // Activations are Nx...? we need this other number
-          // Actications are tokensxK, so split upon tokens
-          // Each chunk is therefore tile_size x K
-          // size_t tensor_elements = hints.act_tile_size * kernel_params.K.uint32Value;  // each chunk has target_out_split_size*in_size elements.
-
-          // process the B input.
-          // std::string a_input_name = node_unit.Name() + "A_" + std::to_string(j);
-
-          // // make a vector of vectors of size target_out_split_size.
-          // // No size reduction, since there's no data compression
-          // size_t a_chunk_size = tensor_elements;
-          // LOGS(logger, INFO) << "A chunk size: " << a_chunk_size;
-          // ;
-          // size_t a_offset = i * a_chunk_size;
-          // size_t a_end    = a_offset + a_chunk_size;
-
-          // if (a_offset >= a_end) {
-          //   ORT_THROW("split_count or split_size inconsistent with A tensor size");
-          // }
-
-          // // Activation tensor is a runtime tensor, so we try a dud set of values
-          // std::vector<uint8_t> a_values_split;//(a_values.begin() + a_offset,a_values.begin() + a_end);
-          // TensorInfo a_info = {};
-          // // print the original tensor info
-          // ORT_RETURN_IF_ERROR(qnn_model_wrapper.GetTensorInfo(node_inputs[0], a_info));
-          // // update the shape to reflect the split size
-          // a_info.shape[1] = hints.act_tile_size;  // update the shape to reflect the split size
-          // // might need to otherwise adjust size?
-          // LOGS(logger, INFO) << "A chunk shape: " << a_info.shape[0] << ", " << a_info.shape[1] << ", " << a_info.shape[2];
-
-          // // these two types are wildly different
-          // LOGS(logger, INFO) << "A input tensor: " << a_info.qnn_data_type << " against " << QNN_DATATYPE_UFIXED_POINT_16;
-
-          // QnnTensorWrapper a_input_tensor(
-          //     a_input_name,
-          //     QNN_TENSOR_TYPE_NATIVE,  // It's a regular internal tensor, think this is the right one
-          //     QNN_DATATYPE_UFIXED_POINT_16, // activations are quint16
-          //     std::move(a_info.quant_param),  // If unquantized, otherwise pass scale/offset
-          //     std::move(a_info.shape),
-          //     std::move(a_values_split)  // your replacement buffer. Try just a dud buffer for now
-          // );
-
-          // // add the tensor to the model wrapper.
-          // ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(a_input_tensor)), "Failed to add input");
-          // split_a_tensor_names.push_back(a_input_name);
-
-          // // Fix the output tensor too
-          // split_output_tensor_names[i];
 
 
           // Now create the matmul node for this tensor
@@ -1133,6 +1186,7 @@ Status MatMulNBitsOpBuilder::ProcessAttributesAndOutputs([[maybe_unused]]QnnMode
         axis_qnn_scalar = QNN_SCALAR_INIT;
         axis_qnn_scalar.dataType = QNN_DATATYPE_UINT_32;
         axis_qnn_scalar.int32Value = default_axis;
+
         QnnParamWrapper concat_axis_param(node_unit.Index(), node_unit.Name() + "_inner_concat_" + std::to_string(i), QNN_OP_CONCAT_PARAM_AXIS, axis_qnn_scalar);
         param_tensor_names_concat.push_back(concat_axis_param.GetParamTensorName());
         qnn_model_wrapper.AddParamWrapper(std::move(concat_axis_param));
@@ -1180,6 +1234,15 @@ Status MatMulNBitsOpBuilder::ProcessAttributesAndOutputs([[maybe_unused]]QnnMode
     // For each height set
 
     if (hints.split_count > 1 && hints.act_tile_count > 1) {
+
+
+      // if crouton, then we need to concat and then reshape
+      // concat to 8x128x128, along last dim
+      // reshape to 1024x1024, and there's a missing factor of 8 somewhere
+      // otherwise, below is fine
+
+
+
       LOGS(logger, INFO) << "Concatenating the outputs of the MatMul nodes.";
       // now we need to add the output node, which is a concat of all the matmul outputs.
       std::vector<std::string> param_tensor_names_concat;
@@ -1192,6 +1255,8 @@ Status MatMulNBitsOpBuilder::ProcessAttributesAndOutputs([[maybe_unused]]QnnMode
       QnnParamWrapper axis_param(node_unit.Index(), node_unit.Name() + "_outer_concat", QNN_OP_CONCAT_PARAM_AXIS, axis_qnn_scalar);
       param_tensor_names_concat.push_back(axis_param.GetParamTensorName());
       qnn_model_wrapper.AddParamWrapper(std::move(axis_param));
+
+      // This output shape needs fixing
       LOGS(logger, INFO) << "Creating Concat node on the output: " << node_unit.Name() + "Concat_outer";
       ORT_RETURN_IF_NOT(qnn_model_wrapper.CreateQnnNode(node_unit.Name() + "_concat_outer",
                                                         QNN_OP_PACKAGE_NAME_QTI_AISW,
