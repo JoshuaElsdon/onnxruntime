@@ -1234,15 +1234,6 @@ Status MatMulNBitsOpBuilder::ProcessAttributesAndOutputs([[maybe_unused]]QnnMode
     // For each height set
 
     if (hints.split_count > 1 && hints.act_tile_count > 1) {
-
-
-      // if crouton, then we need to concat and then reshape
-      // concat to 8x128x128, along last dim
-      // reshape to 1024x1024, and there's a missing factor of 8 somewhere
-      // otherwise, below is fine
-
-
-
       LOGS(logger, INFO) << "Concatenating the outputs of the MatMul nodes.";
       // now we need to add the output node, which is a concat of all the matmul outputs.
       std::vector<std::string> param_tensor_names_concat;
@@ -1256,16 +1247,61 @@ Status MatMulNBitsOpBuilder::ProcessAttributesAndOutputs([[maybe_unused]]QnnMode
       param_tensor_names_concat.push_back(axis_param.GetParamTensorName());
       qnn_model_wrapper.AddParamWrapper(std::move(axis_param));
 
-      // This output shape needs fixing
-      LOGS(logger, INFO) << "Creating Concat node on the output: " << node_unit.Name() + "Concat_outer";
-      ORT_RETURN_IF_NOT(qnn_model_wrapper.CreateQnnNode(node_unit.Name() + "_concat_outer",
-                                                        QNN_OP_PACKAGE_NAME_QTI_AISW,
-                                                        QNN_OP_CONCAT,
-                                                        std::move(intermediate_concat_output_names),
-                                                        {node_outputs[0].node_arg.Name()},
-                                                        std::move(param_tensor_names_concat),
-                                                        do_op_validation),
-                        "Failed to add final Concat node.");
+      if (hints.crouton) {
+        // For crouton layout: concat to intermediate shape (8, height/8, total_width/8), then reshape to final output
+        LOGS(logger, INFO) << "Creating intermediate Concat node for crouton layout";
+
+        // Create intermediate concat output tensor with crouton shape
+        TensorInfo concat_output_info = {};
+        ORT_RETURN_IF_ERROR(qnn_model_wrapper.GetTensorInfo(node_outputs[0], concat_output_info));
+        concat_output_info.shape[concat_output_info.shape.size()-3] = 8;
+        concat_output_info.shape[concat_output_info.shape.size()-2] = (hints.act_tile_size * hints.act_tile_count) / 8;
+        concat_output_info.shape[concat_output_info.shape.size()-1] = (hints.split_size * hints.split_count) / 8;
+
+        std::string concat_intermediate_name = node_unit.Name() + "_concat_intermediate";
+        QnnTensorWrapper concat_output_tensor(
+            concat_intermediate_name,
+            QNN_TENSOR_TYPE_NATIVE,
+            concat_output_info.qnn_data_type,
+            concat_output_info.quant_param.Copy(),
+            std::move(concat_output_info.shape));
+
+        ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(concat_output_tensor)),
+                          "Failed to add intermediate concat output tensor");
+
+        LOGS(logger, INFO) << "Creating Concat node on the output: " << node_unit.Name() + "_concat_outer";
+        ORT_RETURN_IF_NOT(qnn_model_wrapper.CreateQnnNode(node_unit.Name() + "_concat_outer",
+                                                          QNN_OP_PACKAGE_NAME_QTI_AISW,
+                                                          QNN_OP_CONCAT,
+                                                          std::move(intermediate_concat_output_names),
+                                                          {concat_intermediate_name},
+                                                          std::move(param_tensor_names_concat),
+                                                          do_op_validation),
+                          "Failed to add intermediate Concat node.");
+
+        // Now reshape back to original output shape (1, height, width)
+        LOGS(logger, INFO) << "Creating final Reshape node to restore original output shape";
+        ORT_RETURN_IF_NOT(qnn_model_wrapper.CreateQnnNode(
+                            node_unit.Name() + "_final_reshape",
+                            QNN_OP_PACKAGE_NAME_QTI_AISW,
+                            QNN_OP_RESHAPE,
+                            {concat_intermediate_name},
+                            {node_outputs[0].node_arg.Name()},
+                            {},
+                            do_op_validation),
+                        "Failed to add final reshape node.");
+      } else {
+        // Non-crouton path: concat directly to output
+        LOGS(logger, INFO) << "Creating Concat node on the output: " << node_unit.Name() + "_concat_outer";
+        ORT_RETURN_IF_NOT(qnn_model_wrapper.CreateQnnNode(node_unit.Name() + "_concat_outer",
+                                                          QNN_OP_PACKAGE_NAME_QTI_AISW,
+                                                          QNN_OP_CONCAT,
+                                                          std::move(intermediate_concat_output_names),
+                                                          {node_outputs[0].node_arg.Name()},
+                                                          std::move(param_tensor_names_concat),
+                                                          do_op_validation),
+                          "Failed to add final Concat node.");
+      }
     } else if (hints.split_count > 1)
     {
       LOGS(logger, INFO) << "Concatenating the outputs of the MatMul nodes.";
