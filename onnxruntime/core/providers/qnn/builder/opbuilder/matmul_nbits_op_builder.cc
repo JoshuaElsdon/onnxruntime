@@ -353,13 +353,38 @@ Status MatMulNBitsOpBuilder::ProcessInputs([[maybe_unused]]QnnModelWrapper& qnn_
 
       // process the zeros input.
       std::string zeros_input_name = node_unit.Name() + "Zeros_" + std::to_string(i);
-      // make a vector of vectors of size target_out_split_size.
-      size_t zeros_chunk_size = tensor_elements / (64 * 4);  // each chunk has target_out_split_size*in_size/64 elements, 4 are packed into a byte.
-      std::vector<uint8_t> zeros_values_split(zero_values_orig.begin() + i * zeros_chunk_size, zero_values_orig.begin() + (i + 1) * zeros_chunk_size);
+      // Calculate the expected zeros size based on the split_size and block_size
+      uint32_t k_blocks = kernel_params.K.uint32Value / kernel_params.block.uint32Value;
+      uint32_t zero_points_size = (k_blocks * 2 + 7) / 8;  // ceiling division for 2-bit
+      size_t zeros_chunk_size = hints.split_size * zero_points_size;
+      
+      size_t zeros_offset = i * zeros_chunk_size;
+      size_t zeros_end = std::min(zeros_offset + zeros_chunk_size, zero_values_orig.size());
+      
+      // Extract the chunk (might be smaller than expected due to original data size)
+      size_t actual_chunk_size = (zeros_end > zeros_offset) ? (zeros_end - zeros_offset) : 0;
+      std::vector<uint8_t> zeros_values_split(actual_chunk_size);
+      if (actual_chunk_size > 0) {
+        std::copy(zero_values_orig.begin() + zeros_offset, 
+                  zero_values_orig.begin() + zeros_end,
+                  zeros_values_split.begin());
+      }
+      
+      // Pad to the expected size
+      if (zeros_values_split.size() < zeros_chunk_size) {
+        zeros_values_split.resize(zeros_chunk_size, 0);
+      }
+      
       TensorInfo zeros_info = {};
       // print the original tensor info
       ORT_RETURN_IF_ERROR(qnn_model_wrapper.GetTensorInfo(node_inputs[3], zeros_info));
       zeros_info.shape[0] = hints.split_size;  // update the shape to reflect the split size
+      
+      LOGS(logger, INFO) << "Zeros chunk " << i << ": expected size=" << zeros_chunk_size 
+                         << ", actual size=" << actual_chunk_size
+                         << ", final size=" << zeros_values_split.size()
+                         << ", shape[0]=" << zeros_info.shape[0];
+      
       QnnTensorWrapper zeros_input_tensor(
           zeros_input_name,
           QNN_TENSOR_TYPE_STATIC,  // It's an initializer
@@ -450,11 +475,26 @@ Status MatMulNBitsOpBuilder::ProcessInputs([[maybe_unused]]QnnModelWrapper& qnn_
       std::string zeros_input_name = node_unit.Name() + "Zeros_" + std::to_string(i);
       LOGS(logger, INFO) << "Processing zeros input: " << zeros_input_name;
 
-      // get the subset of the original zeros values for the current chunk.
-      size_t zeros_chunk_size = tensor_elements / (64 * 4);  // each chunk has target_out_split_size*in_size/64 elements, 4 are packed into a byte.
+      // Calculate the expected zeros size based on the split_size and block_size
+      uint32_t k_blocks = kernel_params.K.uint32Value / kernel_params.block.uint32Value;
+      uint32_t zero_points_size = (k_blocks * 2 + 7) / 8;  // ceiling division for 2-bit
+      size_t zeros_chunk_size = hints.split_size * zero_points_size;
+      
       LOGS(logger, INFO) << "Zeros chunk size: " << zeros_chunk_size;
-      // split the zero_values into chunks of size zeros_chunk_size.
-      zero_values.assign(zero_values_orig.begin() + i * zeros_chunk_size, zero_values_orig.begin() + (i + 1) * zeros_chunk_size);
+      
+      size_t zeros_offset = i * zeros_chunk_size;
+      size_t zeros_end = std::min(zeros_offset + zeros_chunk_size, zero_values_orig.size());
+      
+      // Extract the chunk (might be smaller than expected due to original data size)
+      size_t actual_chunk_size = (zeros_end > zeros_offset) ? (zeros_end - zeros_offset) : 0;
+      if (actual_chunk_size > 0) {
+        zero_values.assign(zero_values_orig.begin() + zeros_offset, zero_values_orig.begin() + zeros_end);
+      }
+      
+      // Pad to the expected size
+      if (zero_values.size() < zeros_chunk_size) {
+        zero_values.resize(zeros_chunk_size, 0);
+      }
 
       // ensure allignment of zero_values to 32 bits
       std::vector<int32_t> zero_values_shuff_32(zero_values.size() / sizeof(int32_t), 0);
