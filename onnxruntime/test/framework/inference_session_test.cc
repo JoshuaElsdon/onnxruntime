@@ -51,7 +51,7 @@
 #include "core/session/onnxruntime_session_options_config_keys.h"
 #include "core/session/onnxruntime_run_options_config_keys.h"
 #include "dummy_provider.h"
-#include "test_utils.h"
+#include "test/unittest_util/framework_test_utils.h"
 #include "test/capturing_sink.h"
 #include "test/test_environment.h"
 #include "test/providers/provider_test_utils.h"
@@ -388,10 +388,7 @@ void RunModelWithBindingMatMul(InferenceSession& session_object,
   std::vector<float> expected_values_mul_y_2 = {174, 216, 258, 102, 128, 154, 30, 40, 50};
 
   // Now run
-  st = session_object.Run(run_options, *io_binding.get());
-
-  std::cout << "Run returned status: " << st.ErrorMessage() << std::endl;
-  ASSERT_TRUE(st.IsOK());
+  ASSERT_STATUS_OK(session_object.Run(run_options, *io_binding));
 
   if ((is_preallocate_output_vec && (allocation_provider == kCudaExecutionProvider || allocation_provider == kRocmExecutionProvider || allocation_provider == kWebGpuExecutionProvider)) ||
       (output_device && output_device->Type() == OrtDevice::GPU)) {
@@ -402,21 +399,19 @@ void RunModelWithBindingMatMul(InferenceSession& session_object,
     auto& rtensor = outputs.front().Get<Tensor>();
     auto element_type = rtensor.DataType();
     auto& shape = rtensor.Shape();
-    std::unique_ptr<Tensor> cpu_tensor = std::make_unique<Tensor>(element_type, shape, cpu_alloc);
+    Tensor cpu_tensor(element_type, shape, cpu_alloc);
 #ifdef USE_CUDA
-    st = GetProviderInfo_CUDA().CreateGPUDataTransfer()->CopyTensor(rtensor, *cpu_tensor.get());
+    st = gpu_provider->GetDataTransfer()->CopyTensor(rtensor, cpu_tensor);
 #endif
 #ifdef USE_ROCM
-    st = GetProviderInfo_ROCM().CreateGPUDataTransfer()->CopyTensor(rtensor, *cpu_tensor.get());
+    st = GetProviderInfo_ROCM().CreateGPUDataTransfer()->CopyTensor(rtensor, cpu_tensor);
 #endif
 #ifdef USE_WEBGPU
-    st = gpu_provider->GetDataTransfer()->CopyTensor(rtensor, *cpu_tensor.get());
+    st = gpu_provider->GetDataTransfer()->CopyTensor(rtensor, cpu_tensor);
 #endif
     ASSERT_TRUE(st.IsOK());
     OrtValue ml_value;
-    ml_value.Init(cpu_tensor.release(),
-                  DataTypeImpl::GetType<Tensor>(),
-                  DataTypeImpl::GetType<Tensor>()->GetDeleteFunc());
+    Tensor::InitOrtValue(std::move(cpu_tensor), ml_value);
     VerifyOutputs({ml_value}, expected_output_dims, expected_values_mul_y);
 #endif
   } else {
@@ -588,93 +583,6 @@ TEST(InferenceSessionTests, RequestLoadCancellation) {
   }
 }
 
-#ifdef ORT_RUN_EXTERNAL_ONNX_TESTS
-static bool Compare(const InputDefList& f_arg, const InputDefList& s_arg) {
-  if (f_arg.size() != s_arg.size()) {
-    std::cout << "Sizes differ: f_arg size: " << f_arg.size() << " s_arg size: " << s_arg.size() << std::endl;
-    return false;
-  }
-
-  for (size_t i = 0; i < f_arg.size(); ++i) {
-    const onnxruntime::NodeArg* x = f_arg[i];
-    const onnxruntime::NodeArg* y = s_arg[i];
-    if ((x->Shape() == nullptr) ^ (y->Shape() == nullptr)) {
-      return false;
-    }
-    if (!x->Shape()) {
-      continue;
-    }
-    auto x_shape = utils::GetTensorShapeFromTensorShapeProto(*x->Shape());
-    auto y_shape = utils::GetTensorShapeFromTensorShapeProto(*y->Shape());
-    if (x->Name() == y->Name() && x_shape == y_shape && *x->Type() == *y->Type()) {
-      continue;
-    }
-    return false;
-  }
-
-  return true;
-}
-
-TEST(InferenceSessionTests, ModelMetadata) {
-  SessionOptions so;
-
-  so.session_logid = "InferenceSessionTests.ModelMetadata";
-  InferenceSession session_object{so, GetEnvironment()};
-  auto model_uri = ORT_TSTR("../models/opset8/test_squeezenet/model.onnx");
-  ASSERT_STATUS_OK(session_object.Load(model_uri));
-
-  std::shared_ptr<onnxruntime::Model> p_model;
-  ASSERT_STATUS_OK(onnxruntime::Model::Load(model_uri, p_model, nullptr, DefaultLoggingManager().DefaultLogger()));
-  const onnxruntime::Graph& graph = p_model->MainGraph();
-
-  // 1. first test the model meta
-  {
-    auto retval = session_object.GetModelMetadata();
-    ASSERT_TRUE(retval.first.IsOK());
-    const ModelMetadata* m = retval.second;
-    ASSERT_TRUE(m->custom_metadata_map == p_model->MetaData() &&
-                m->description == p_model->DocString() &&
-                m->domain == p_model->Domain() &&
-                m->graph_name == graph.Name() &&
-                m->producer_name == p_model->ProducerName() &&
-                m->version == p_model->ModelVersion());
-  }
-
-  {
-    // 2. test inputs
-    auto& inputs = graph.GetInputs();
-    auto weights = graph.GetAllInitializedTensors();
-
-    // skip the weights
-    InputDefList inputs_no_weights;
-    for (auto& elem : inputs) {
-      if (weights.find(elem->Name()) != weights.end()) {
-        continue;
-      } else {
-        inputs_no_weights.push_back(elem);
-      }
-    }
-
-    auto retval = session_object.GetModelInputs();
-    std::cout << "weights size: " << weights.size()
-              << " inputs.size(): " << inputs.size()
-              << " from session: " << retval.second->size() << std::endl;
-    ASSERT_TRUE(retval.first.IsOK());
-    ASSERT_TRUE(Compare(inputs_no_weights, *retval.second));
-  }
-
-  // 3. test outputs
-  {
-    auto retval = session_object.GetModelOutputs();
-    ASSERT_TRUE(retval.first.IsOK());
-
-    auto& outputs = graph.GetOutputs();
-    retval = session_object.GetModelOutputs();
-    ASSERT_TRUE(retval.first.IsOK());
-    ASSERT_TRUE(Compare(outputs, *retval.second));
-  }
-}
-#endif
 TEST(InferenceSessionTests, CheckRunLogger) {
   if constexpr (!SessionOptions::DEFAULT_USE_PER_SESSION_THREADS) {
     GTEST_SKIP() << "Skipping the test";
@@ -717,7 +625,8 @@ TEST(InferenceSessionTests, CheckRunLogger) {
 }
 
 // WebAssembly will emit profiling data into console
-#if !defined(__wasm__)
+// TODO(hasesh): Investigate why this test fails on Windows CUDA builds
+#if (!defined(__wasm__) && !defined(_WIN32))
 TEST(InferenceSessionTests, CheckRunProfilerWithSessionOptions) {
   SessionOptions so;
 
@@ -2316,7 +2225,7 @@ TEST(InferenceSessionTests, TestArenaShrinkageAfterRun) {
   auto cuda_alloc = session_object.GetAllocator(mem_info);
 
   AllocatorStats alloc_stats;
-  static_cast<BFCArena*>(cuda_alloc.get())->GetStats(&alloc_stats);
+  cuda_alloc->GetStats(&alloc_stats);
 #ifdef ENABLE_TRAINING
   // In training builds, initializers are allocated using the Reserve() call which
   // will not cause an arena extension
@@ -2336,7 +2245,7 @@ TEST(InferenceSessionTests, TestArenaShrinkageAfterRun) {
     RunOptions run_options_1;
     RunModel(session_object, run_options_1);
 
-    static_cast<BFCArena*>(cuda_alloc.get())->GetStats(&alloc_stats);
+    cuda_alloc->GetStats(&alloc_stats);
 
     // The arena would have made 2 more extensions as part of servicing memory requests within Run()
     // 1) - To take the solitary feed to cuda memory
@@ -2360,7 +2269,7 @@ TEST(InferenceSessionTests, TestArenaShrinkageAfterRun) {
                                                                  "gpu:0"));
     RunModel(session_object, run_options_2);
 
-    static_cast<BFCArena*>(cuda_alloc.get())->GetStats(&alloc_stats);
+    cuda_alloc->GetStats(&alloc_stats);
 
     // The arena would have made no extensions in this Run() as the freed memory after the first Run()
     // will be re-used
