@@ -354,8 +354,10 @@ Status MatMulNBitsOpBuilder::ProcessInputs([[maybe_unused]]QnnModelWrapper& qnn_
       // process the zeros input.
       std::string zeros_input_name = node_unit.Name() + "Zeros_" + std::to_string(i);
       // Calculate the expected zeros size based on the split_size and block_size
+      // Zeros tensor is [N, zero_points_size] where zero_points_size = (k_blocks * bits + 7) / 8
+      // Each split gets [split_size, zero_points_size] bytes
       uint32_t k_blocks = kernel_params.K.uint32Value / kernel_params.block.uint32Value;
-      uint32_t zero_points_size = (k_blocks * 2 + 7) / 8;  // ceiling division for 2-bit
+      size_t zero_points_size = (k_blocks * 2 + 7) / 8;  // bits per row packed into bytes
       size_t zeros_chunk_size = hints.split_size * zero_points_size;
       
       size_t zeros_offset = i * zeros_chunk_size;
@@ -476,8 +478,10 @@ Status MatMulNBitsOpBuilder::ProcessInputs([[maybe_unused]]QnnModelWrapper& qnn_
       LOGS(logger, INFO) << "Processing zeros input: " << zeros_input_name;
 
       // Calculate the expected zeros size based on the split_size and block_size
+      // Zeros tensor is [N, zero_points_size] where zero_points_size = (k_blocks * bits + 7) / 8
+      // Each split gets [split_size, zero_points_size] bytes
       uint32_t k_blocks = kernel_params.K.uint32Value / kernel_params.block.uint32Value;
-      uint32_t zero_points_size = (k_blocks * 2 + 7) / 8;  // ceiling division for 2-bit
+      size_t zero_points_size = (k_blocks * 2 + 7) / 8;  // bits per row packed into bytes
       size_t zeros_chunk_size = hints.split_size * zero_points_size;
       
       LOGS(logger, INFO) << "Zeros chunk size: " << zeros_chunk_size;
@@ -496,16 +500,49 @@ Status MatMulNBitsOpBuilder::ProcessInputs([[maybe_unused]]QnnModelWrapper& qnn_
         zero_values.resize(zeros_chunk_size, 0);
       }
 
-      // ensure allignment of zero_values to 32 bits
-      std::vector<int32_t> zero_values_shuff_32(zero_values.size() / sizeof(int32_t), 0);
-      split_transpose_2bit(zero_values_shuff_32.data(), reinterpret_cast<int32_t*>(zero_values.data()), kernel_params.K.uint32Value / kernel_params.block.uint32Value, hints.split_size);
+      // Repack zeros from row-padded format to densely packed format
+      // Input: split_size rows, each with zero_points_size bytes (may have padding bits)
+      // Output: k_blocks * split_size 2-bit values packed densely
+      size_t dense_size = (k_blocks * hints.split_size * 2 + 7) / 8;
+      std::vector<uint8_t> zero_values_dense(dense_size, 0);
+      
+      size_t output_bit_idx = 0;
+      for (size_t row = 0; row < hints.split_size; ++row) {
+        for (size_t col = 0; col < k_blocks; ++col) {
+          // Extract 2-bit value from input
+          size_t input_bit_idx = row * zero_points_size * 8 + col * 2;
+          size_t input_byte_idx = input_bit_idx / 8;
+          size_t input_bit_offset = input_bit_idx % 8;
+          uint8_t value = (zero_values[input_byte_idx] >> input_bit_offset) & 0x3;
+          
+          // Write to densely packed output
+          size_t output_byte_idx = output_bit_idx / 8;
+          size_t output_bit_offset = output_bit_idx % 8;
+          zero_values_dense[output_byte_idx] |= (value << output_bit_offset);
+          output_bit_idx += 2;
+        }
+      }
+
+      // split_transpose_2bit transposes from (H, W) to (W, H) and separates bit planes
+      // Input: (split_size, k_blocks) of 2-bit values, densely packed
+      // Output: (k_blocks, split_size) in 2 bit planes
+      size_t output_bits_per_plane = k_blocks * hints.split_size;
+      size_t output_bytes_per_plane = (output_bits_per_plane + 7) / 8;
+      size_t output_total_bytes = 2 * output_bytes_per_plane;
+      
+      // Allocate output buffer with correct size (not input size!)
+      std::vector<int32_t> zero_values_shuff_32((output_total_bytes + 3) / sizeof(int32_t), 0);
+      split_transpose_2bit(zero_values_shuff_32.data(), reinterpret_cast<int32_t*>(zero_values_dense.data()), kernel_params.K.uint32Value / kernel_params.block.uint32Value, hints.split_size);
 
       uint8_t* zero_bytes = reinterpret_cast<uint8_t*>(zero_values_shuff_32.data());
-      std::vector<uint8_t> zero_values_shuff(zero_bytes, zero_bytes + zero_values.size());
+      std::vector<uint8_t> zero_values_shuff(zero_bytes, zero_bytes + output_total_bytes);
 
       TensorInfo zero_info = {};
       ORT_RETURN_IF_ERROR(qnn_model_wrapper.GetTensorInfo(node_inputs[3], zero_info));
-      zero_info.shape = {1, 2, hints.split_size, kernel_params.K.uint32Value / (kernel_params.block.uint32Value * 8)};  // reshape to 1, 2, K/block_size, N
+      // After split_transpose_2bit: shape reflects transposed dimensions (k_blocks, split_size) with 2 bit planes
+      // Each bit plane has k_blocks rows, with split_size bits per row packed into bytes
+      uint32_t bytes_per_row = (hints.split_size + 7) / 8;
+      zero_info.shape = {1, 2, k_blocks, bytes_per_row};
       QnnTensorWrapper zeros_tensor_wrapper(
           zeros_input_name,
           QNN_TENSOR_TYPE_STATIC,  // It's an initializer
