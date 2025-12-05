@@ -302,11 +302,17 @@ Status MatMulNBitsOpBuilder::ProcessInputs([[maybe_unused]]QnnModelWrapper& qnn_
       // print the b_chunk_size
       LOGS(logger, INFO) << "B chunk size: " << b_chunk_size;
       size_t b_offset = i * b_chunk_size;
+      LOGS(logger, INFO) << "B offset: " << b_offset;
+      LOGS(logger, INFO) << "B original size: " << b_values_orig.size();
       size_t b_end    = std::min(b_offset + b_chunk_size, b_values_orig.size());
+      LOGS(logger, INFO) << "B end: " << b_end;
 
       if (b_offset >= b_end) {
         ORT_THROW("split_count or split_size inconsistent with B tensor size");
       }
+
+      LOGS(logger, INFO) << "Setting up split array for B";
+
       // split the b_values into chunks of size b_chunk_size.
       std::vector<uint8_t> b_values_split(b_values_orig.begin() + b_offset,b_values_orig.begin() + b_end);
       TensorInfo b_info = {};
@@ -327,6 +333,8 @@ Status MatMulNBitsOpBuilder::ProcessInputs([[maybe_unused]]QnnModelWrapper& qnn_
       // add the tensor to the model wrapper.
       ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(b_input_tensor)), "Failed to add input");
       split_b_tensor_names.push_back(b_input_name);
+
+      LOGS(logger, INFO) << "Created B tensor, now for the scales";
 
       // process the scale input.
       std::string scale_input_name = node_unit.Name() + "Scale_" + std::to_string(i);
@@ -351,6 +359,8 @@ Status MatMulNBitsOpBuilder::ProcessInputs([[maybe_unused]]QnnModelWrapper& qnn_
       // add the tensor to the model wrapper
       ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(scale_input_tensor)), "Failed to add input");
       split_scales_tensor_names.push_back(scale_input_name);
+
+      LOGS(logger, INFO) << "Done scales, now for zeroes";
 
       // process the zeros input.
       std::string zeros_input_name = node_unit.Name() + "Zeros_" + std::to_string(i);
@@ -396,17 +406,40 @@ Status MatMulNBitsOpBuilder::ProcessInputs([[maybe_unused]]QnnModelWrapper& qnn_
       LOGS(logger, INFO) << "B chunk size: " << b_chunk_size;
       // split the b_values into chunks of size b_chunk_size.
 
-      b_values.assign(b_values_orig.begin() + i * b_chunk_size, b_values_orig.begin() + (i + 1) * b_chunk_size);
+      size_t b_offset = i * b_chunk_size;
+      size_t b_end = std::min((i + 1) * b_chunk_size, b_values_orig.size());
+      LOGS(logger, INFO) << "B offset: " << b_offset;
+      LOGS(logger, INFO) << "B end: " << b_end;
+      LOGS(logger, INFO) << "B original size: " << b_values_orig.size();
 
-      // ensure allignment of b_values to 32 bits
-      std::vector<int32_t> b_values_shuff_32(b_values.size() / sizeof(int32_t), 0);
+      if (b_offset >= b_end) {
+        ORT_THROW("split_count or split_size inconsistent with B tensor size in shuffle path");
+      }
+
+      b_values.assign(b_values_orig.begin() + b_offset, b_values_orig.begin() + b_end);
+      LOGS(logger, INFO) << "B new size: " << b_values.size();
+
+      // Calculate the size needed for shuffled data: (H * W * 2 bits) / (32 bits per int32_t)
+      // H = hints.split_size, W = kernel_params.K.uint32Value, 2 bits per element
+      size_t num_int32_elements = b_values.size() / sizeof(int32_t);//(hints.split_size * kernel_params.K.uint32Value * 2 + 31) / 32;
+      std::vector<int32_t> b_values_shuff_32(num_int32_elements, 0);
+
+      LOGS(logger, INFO) << "B values shuff size: " << b_values_shuff_32.size();
+
+      LOGS(logger, INFO) << "split_tile_2bit parameters: W=" << kernel_params.K.uint32Value << ", H=" << hints.split_size;
 
       split_tile_2bit(b_values_shuff_32.data(), reinterpret_cast<int32_t*>(b_values.data()), kernel_params.K.uint32Value, hints.split_size);
+
+      LOGS(logger, INFO) << "B tiled and split";
       uint8_t* bytes = reinterpret_cast<uint8_t*>(b_values_shuff_32.data());
+      LOGS(logger, INFO) << "B bytes size: " << (b_values_shuff_32.size());
+      LOGS(logger, INFO) << "Compare to : " << b_values.size();
       std::vector<uint8_t> b_values_shuff(bytes, bytes + b_values.size());
+      LOGS(logger, INFO) << "Created yet another vector, b_values_shuff " << b_values_shuff.size();
       TensorInfo b_info = {};
       ORT_RETURN_IF_ERROR(qnn_model_wrapper.GetTensorInfo(node_inputs[1], b_info));
       b_info.shape = {1, 2, kernel_params.K.uint32Value / 8, hints.split_size};  // reshape to 1, 2, N, K/block_size
+      LOGS(logger, INFO) << "B info shape " << b_info.shape[0] << ", " << b_info.shape[1] << ", " << b_info.shape[2] << ", " << b_info.shape[3];
       QnnTensorWrapper b_tensor_wrapper(
           b_split_name,
           QNN_TENSOR_TYPE_STATIC,  // It's an initializer
@@ -929,7 +962,14 @@ Status MatMulNBitsOpBuilder::ProcessAttributesAndOutputs([[maybe_unused]]QnnMode
       LOGS(logger, INFO) << "Creating UnpackWeightsNBits node for split: " << i;
       // create the weights tensor name
       std::string weights_name = node_unit.Name() + "_weights_" + std::to_string(i);
+
+      // Unpack weights now transposes within it:
       std::vector<uint32_t> weights_shape = {hints.split_size, kernel_params.K.uint32Value};
+      if (hints.kernel_transpose)
+      {
+        // We need a transposed shape
+        weights_shape = {kernel_params.K.uint32Value, hints.split_size};
+      }
 
       if (hints.crouton)
       {
@@ -938,6 +978,8 @@ Status MatMulNBitsOpBuilder::ProcessAttributesAndOutputs([[maybe_unused]]QnnMode
         weights_shape = {8, hints.split_size / 8, kernel_params.K.uint32Value};
         LOGS(logger, INFO) << "Crouton tiling applied to weights tensor, shape: " << weights_shape[0] << "," << weights_shape[1] << "," << weights_shape[2];
       }
+
+      LOGS(logger, INFO) << "Weights " << weights_name << " tensor shape for unpacked weights: " << weights_shape[0] << "," << weights_shape[1];
 
       QnnTensorWrapper weights_tensor(weights_name,
                                       QNN_TENSOR_TYPE_NATIVE,
@@ -961,20 +1003,7 @@ Status MatMulNBitsOpBuilder::ProcessAttributesAndOutputs([[maybe_unused]]QnnMode
 
       LOGS(logger, INFO) << "Consider tiling A tensors: " << hints.act_tile_count;
 
-      // This is a problem. Why? It's not an initializer
-      // So we cannot directly use the values of the A tensor, because this is a runtime tensor. Duh.
-      // std::vector<uint8_t> a_values;
-      // ORT_RETURN_IF_ERROR(GetInitializerUint8TensorValuesMatMulNBits(
-      //     qnn_model_wrapper.GetGraphViewer(),
-      //     node_inputs[0].node_arg.Name(),
-      //     a_values,
-      //     logger));
-
       if (hints.act_tile_size > 0 && num_tokens > 1) {
-        // TODO add activation tile here
-        ///////////////////////////////////////////////////////////////////////////////////////
-        ///////////////////////////////////////////////////////////////////////////////////////
-        ///////////////////////////////////////////////////////////////////////////////////////
         LOGS(logger, INFO) << "Try to tile A by " << hints.act_tile_count;
 
         // split the A input properly?
@@ -991,18 +1020,18 @@ Status MatMulNBitsOpBuilder::ProcessAttributesAndOutputs([[maybe_unused]]QnnMode
 
           input_info.shape[last] = hints.act_tile_size;
 
+          // WHy is this failing?
+          LOGS(logger, INFO) << "shape size before crouton check: " << input_info.shape.size();
+          LOGS(logger, INFO) << "node_inptus[0] shape " << input_info.shape[0] << "," << input_info.shape[1] << "," << input_info.shape[2];;
+
           if (hints.crouton)
           {
 
             // add in RESHAPE node to go from 1x1024x1024 to 8x128x1024
             // and then create the split outputs
-
-
-
             input_info.shape[input_info.shape.size() - 3] = 8;
             input_info.shape[input_info.shape.size() - 2] = input_info.shape[input_info.shape.size() - 2] / 8;
             LOGS(logger, INFO) << "Crouton tiling applied to A tensor split, shape: " << input_info.shape[0] << "," << input_info.shape[1] << "," << input_info.shape[2] << "," << input_info.shape[3];
-
           }
 
           QnnTensorWrapper split_output_tensor(
@@ -1014,6 +1043,7 @@ Status MatMulNBitsOpBuilder::ProcessAttributesAndOutputs([[maybe_unused]]QnnMode
 
           ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(split_output_tensor)),
                             "Failed to add split output tensor");
+                            // shape is zero here cos we did a std::move, this is actually ok
           LOGS(logger, INFO) << "Creating A tile tensor " << split_output_name  << " with shape size " << input_info.shape.size();
           a_tile_names.push_back(split_output_name);
           LOGS(logger, INFO) << "A tile tensor: " << a_tile_names[j];
@@ -1156,7 +1186,7 @@ Status MatMulNBitsOpBuilder::ProcessAttributesAndOutputs([[maybe_unused]]QnnMode
 
           Qnn_Scalar_t t1 = QNN_SCALAR_INIT;
           t1.dataType = QNN_DATATYPE_BOOL_8;
-          t1.bool8Value = 1;  // transpose the wieght input.
+          t1.bool8Value = 0;  // transpose the wieght input.
           QnnParamWrapper p1(node_unit.Index(), node_unit.Name() + std::to_string(i) + std::to_string(j), QNN_OP_MAT_MUL_PARAM_TRANSPOSE_IN1, t1);
           param_tensor_names_mul.push_back(p1.GetParamTensorName());
           qnn_model_wrapper.AddParamWrapper(std::move(p1));
@@ -1211,7 +1241,13 @@ Status MatMulNBitsOpBuilder::ProcessAttributesAndOutputs([[maybe_unused]]QnnMode
 
         Qnn_Scalar_t t1 = QNN_SCALAR_INIT;
         t1.dataType = QNN_DATATYPE_BOOL_8;
-        t1.bool8Value = 1;  // transpose the wieght input.
+        t1.bool8Value = 0;  // transpose the weight input.
+        if (hints.kernel_transpose)
+        {
+          // transpose already occurs inside the kernel
+          t1.bool8Value = 0;
+        }
+
         QnnParamWrapper p1(node_unit.Index(), node_unit.Name() + std::to_string(i), QNN_OP_MAT_MUL_PARAM_TRANSPOSE_IN1, t1);
         param_tensor_names_mul.push_back(p1.GetParamTensorName());
         qnn_model_wrapper.AddParamWrapper(std::move(p1));

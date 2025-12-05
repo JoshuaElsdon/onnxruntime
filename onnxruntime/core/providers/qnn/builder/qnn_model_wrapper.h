@@ -302,6 +302,8 @@ class QnnModelWrapper {
     uint32_t act_tile_size = 0; // activation tile size
     uint32_t act_tile_count = 1; // activation tile count
     bool tile = false;
+    bool crouton = false;
+    bool kernel_transpose = false;
   };
 
   ParsedHints parse_hints( const int output_dimension, const int act_in_dim, const logging::Logger& logger) {
@@ -318,6 +320,10 @@ class QnnModelWrapper {
     if (model_hints.find("scratch") != std::string::npos) {
       hints.scratch = true;
       LOGS(logger, INFO) << "Model hint 'scratch' found.";
+    }
+    if (model_hints.find("transpose") != std::string::npos) {
+      hints.kernel_transpose = true;
+      LOGS(logger, INFO) << "Model hint 'transpose' found.";
     }
     if (model_hints.find("tile") != std::string::npos) {
       hints.tile = true;
