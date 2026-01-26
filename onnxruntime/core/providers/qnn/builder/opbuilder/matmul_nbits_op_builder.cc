@@ -235,6 +235,7 @@ Status MatMulNBitsOpBuilder::ProcessInputs([[maybe_unused]]QnnModelWrapper& qnn_
   [[maybe_unused]] KernelParams kernel_params = GetKernelParams(node_unit, logger);
   // get the hints, shuffle, scratch and split size etc.
   [[maybe_unused]] QnnModelWrapper::ParsedHints hints = qnn_model_wrapper.parse_hints(kernel_params.N.uint32Value, logger);
+  LOGS(logger, INFO) << "N=" << kernel_params.N.uint32Value << ", split_size=" << hints.split_size << ", split_count=" << hints.split_count;
 
   // get the handles for the inputs.
   std::vector<NodeUnitIODef> node_inputs = node_unit.Inputs();
@@ -291,7 +292,15 @@ Status MatMulNBitsOpBuilder::ProcessInputs([[maybe_unused]]QnnModelWrapper& qnn_
     for (size_t i = 0; i < hints.split_count; ++i) {
       LOGS(logger, INFO) << "Splitting B, scales and zeros tensors into chunk: " << i;
 
-      size_t tensor_elements = hints.split_size * kernel_params.K.uint32Value;  // each chunk has target_out_split_size*in_size elements.
+      // Calculate actual split size for this chunk (may be smaller than hints.split_size for last chunk)
+      size_t remaining_n = kernel_params.N.uint32Value - (i * hints.split_size);
+      if (remaining_n == 0) {
+        LOGS(logger, WARNING) << "Split " << i << " has remaining_n=0, skipping (split_count may be incorrectly calculated)";
+        break;
+      }
+      size_t actual_split_size = std::min(static_cast<size_t>(hints.split_size), remaining_n);
+      
+      size_t tensor_elements = actual_split_size * kernel_params.K.uint32Value;
 
       // process the B input.
       std::string b_input_name = node_unit.Name() + "B_" + std::to_string(i);
@@ -299,20 +308,20 @@ Status MatMulNBitsOpBuilder::ProcessInputs([[maybe_unused]]QnnModelWrapper& qnn_
       // make a vector of vectors of size target_out_split_size.
       size_t b_chunk_size = tensor_elements / 4;  // each chunk has target_out_split_size*in_size elements, 4 are packed into a byte.
       // print the b_chunk_size
-      LOGS(logger, INFO) << "B chunk size: " << b_chunk_size;
-      size_t b_offset = i * b_chunk_size;
-      size_t b_end    = std::min(b_offset + b_chunk_size, b_values_orig.size());
+      LOGS(logger, INFO) << "B chunk size: " << b_chunk_size << " (actual_split_size: " << actual_split_size << ")";
+      size_t b_offset = i * (hints.split_size * kernel_params.K.uint32Value / 4);
+      size_t b_end    = b_offset + b_chunk_size;
 
-      if (b_offset >= b_end) {
-        ORT_THROW("split_count or split_size inconsistent with B tensor size");
+      if (b_end > b_values_orig.size()) {
+        ORT_THROW("B tensor split exceeds original size");
       }
       // split the b_values into chunks of size b_chunk_size.
-      std::vector<uint8_t> b_values_split(b_values_orig.begin() + b_offset,b_values_orig.begin() + b_end);
+      std::vector<uint8_t> b_values_split(b_values_orig.begin() + b_offset, b_values_orig.begin() + b_end);
       TensorInfo b_info = {};
       // print the original tensor info
       ORT_RETURN_IF_ERROR(qnn_model_wrapper.GetTensorInfo(node_inputs[1], b_info));
-      // update the shape to reflect the split size
-      b_info.shape[0] = hints.split_size;  // update the shape to reflect the split size
+      // update the shape to reflect the actual split size
+      b_info.shape[0] = actual_split_size;
 
       QnnTensorWrapper b_input_tensor(
           b_input_name,
@@ -331,14 +340,19 @@ Status MatMulNBitsOpBuilder::ProcessInputs([[maybe_unused]]QnnModelWrapper& qnn_
       std::string scale_input_name = node_unit.Name() + "Scale_" + std::to_string(i);
       // make a vector of vectors of size target_out_split_size.
       size_t scale_chunk_size = 2 * tensor_elements / 64;  // each chunk has target_out_split_size*in_size elements/ 64 elements, they are in a 16-bit format.
-      std::vector<uint8_t> scale_values_split(scale_values_orig.begin() + i * scale_chunk_size, scale_values_orig.begin() + (i + 1) * scale_chunk_size);
+      size_t scale_offset = i * (2 * hints.split_size * kernel_params.K.uint32Value / 64);
+      size_t scale_end = scale_offset + scale_chunk_size;
+      if (scale_end > scale_values_orig.size()) {
+        ORT_THROW("Scale tensor split exceeds original size");
+      }
+      std::vector<uint8_t> scale_values_split(scale_values_orig.begin() + scale_offset, scale_values_orig.begin() + scale_end);
       TensorInfo scale_info = {};
       // print the original tensor info
       ORT_RETURN_IF_ERROR(qnn_model_wrapper.GetTensorInfo(node_inputs[2], scale_info));
       // get the number of dims
       [[maybe_unused]] size_t scale_num_dims = scale_info.shape.size();
       // print the shape
-      scale_info.shape[0] = hints.split_size;  // update the shape to reflect the split size
+      scale_info.shape[0] = actual_split_size;  // update the shape to reflect the actual split size
       QnnTensorWrapper scale_input_tensor(
           scale_input_name,
           QNN_TENSOR_TYPE_STATIC,  // It's an initializer
@@ -353,39 +367,31 @@ Status MatMulNBitsOpBuilder::ProcessInputs([[maybe_unused]]QnnModelWrapper& qnn_
 
       // process the zeros input.
       std::string zeros_input_name = node_unit.Name() + "Zeros_" + std::to_string(i);
-      // Calculate the expected zeros size based on the split_size and block_size
+      // Calculate the expected zeros size based on the actual_split_size and block_size
       // Zeros tensor is [N, zero_points_size] where zero_points_size = (k_blocks * bits + 7) / 8
-      // Each split gets [split_size, zero_points_size] bytes
+      // Each split gets [actual_split_size, zero_points_size] bytes
       uint32_t k_blocks = kernel_params.K.uint32Value / kernel_params.block.uint32Value;
       size_t zero_points_size = (k_blocks * 2 + 7) / 8;  // bits per row packed into bytes
-      size_t zeros_chunk_size = hints.split_size * zero_points_size;
+      size_t zeros_chunk_size = actual_split_size * zero_points_size;
       
-      size_t zeros_offset = i * zeros_chunk_size;
-      size_t zeros_end = std::min(zeros_offset + zeros_chunk_size, zero_values_orig.size());
+      size_t zeros_offset = i * (hints.split_size * zero_points_size);  // Offset uses original split_size stride
+      size_t zeros_end = zeros_offset + zeros_chunk_size;
       
-      // Extract the chunk (might be smaller than expected due to original data size)
-      size_t actual_chunk_size = (zeros_end > zeros_offset) ? (zeros_end - zeros_offset) : 0;
-      std::vector<uint8_t> zeros_values_split(actual_chunk_size);
-      if (actual_chunk_size > 0) {
-        std::copy(zero_values_orig.begin() + zeros_offset, 
-                  zero_values_orig.begin() + zeros_end,
-                  zeros_values_split.begin());
+      if (zeros_end > zero_values_orig.size()) {
+        ORT_THROW("Zeros tensor split exceeds original size");
       }
       
-      // Pad to the expected size
-      if (zeros_values_split.size() < zeros_chunk_size) {
-        zeros_values_split.resize(zeros_chunk_size, 0);
-      }
+      std::vector<uint8_t> zeros_values_split(zero_values_orig.begin() + zeros_offset, 
+                                               zero_values_orig.begin() + zeros_end);
       
       TensorInfo zeros_info = {};
       // print the original tensor info
       ORT_RETURN_IF_ERROR(qnn_model_wrapper.GetTensorInfo(node_inputs[3], zeros_info));
-      zeros_info.shape[0] = hints.split_size;  // update the shape to reflect the split size
+      // Set shape to [actual_split_size, zero_points_size]
+      zeros_info.shape = {static_cast<uint32_t>(actual_split_size), static_cast<uint32_t>(zero_points_size)};
       
-      LOGS(logger, INFO) << "Zeros chunk " << i << ": expected size=" << zeros_chunk_size 
-                         << ", actual size=" << actual_chunk_size
-                         << ", final size=" << zeros_values_split.size()
-                         << ", shape[0]=" << zeros_info.shape[0];
+      LOGS(logger, INFO) << "Zeros chunk " << i << ": zeros_chunk_size=" << zeros_chunk_size 
+                         << ", shape=[" << zeros_info.shape[0] << ", " << zeros_info.shape[1] << "]";
       
       QnnTensorWrapper zeros_input_tensor(
           zeros_input_name,
@@ -408,10 +414,18 @@ Status MatMulNBitsOpBuilder::ProcessInputs([[maybe_unused]]QnnModelWrapper& qnn_
     // here we modify the input tensors for B, scales and zeros to be shuffled versions of the original tensors.
     // using teh split_tile_2bit, split_transpose_2bit and transpose functions to create the shuffled tensors.
 
-    size_t tensor_elements = hints.split_size * kernel_params.K.uint32Value;
-
     for (size_t i = 0; i < hints.split_count; ++i) {
       LOGS(logger, INFO) << "Shuffling B, scales and zeros tensors into chunk: " << i;
+
+      // Calculate actual split size for this chunk (may be smaller than hints.split_size for last chunk)
+      size_t remaining_n = kernel_params.N.uint32Value - (i * hints.split_size);
+      if (remaining_n == 0) {
+        LOGS(logger, WARNING) << "Split " << i << " has remaining_n=0, skipping (split_count may be incorrectly calculated)";
+        break;
+      }
+      size_t actual_split_size = std::min(static_cast<size_t>(hints.split_size), remaining_n);
+      
+      size_t tensor_elements = actual_split_size * kernel_params.K.uint32Value;
 
       std::vector<uint8_t> b_values;
       std::string b_split_name = node_unit.Name() + "B_" + std::to_string(i);
@@ -419,20 +433,58 @@ Status MatMulNBitsOpBuilder::ProcessInputs([[maybe_unused]]QnnModelWrapper& qnn_
 
       // get the subset of the original B values for the current chunk.
       size_t b_chunk_size = tensor_elements / 4;  // each chunk has target_out_split_size*in_size elements, 4 are packed into a byte.
-      LOGS(logger, INFO) << "B chunk size: " << b_chunk_size;
+      LOGS(logger, INFO) << "B chunk size: " << b_chunk_size << " (actual_split_size: " << actual_split_size << ")";
       // split the b_values into chunks of size b_chunk_size.
-      
-      b_values.assign(b_values_orig.begin() + i * b_chunk_size, b_values_orig.begin() + (i + 1) * b_chunk_size);
+      size_t b_offset = i * (hints.split_size * kernel_params.K.uint32Value / 4);
+      size_t b_end = b_offset + b_chunk_size;
 
-      // ensure allignment of b_values to 32 bits
-      std::vector<int32_t> b_values_shuff_32(b_values.size() / sizeof(int32_t), 0);
+      LOGS(logger, INFO) << "Debug gets here 1";
       
-      split_tile_2bit(b_values_shuff_32.data(), reinterpret_cast<int32_t*>(b_values.data()), kernel_params.K.uint32Value, hints.split_size);
+      if (b_end > b_values_orig.size()) {
+        ORT_THROW("B tensor shuffle split exceeds original size");
+      }
+      
+      b_values.assign(b_values_orig.begin() + b_offset, b_values_orig.begin() + b_end);
+
+      LOGS(logger, INFO) << "Debug gets here 2";
+
+      // Copy b_values to an aligned int32_t buffer for split_tile_2bit
+      // b_values contains packed 2-bit weights, 4 weights per byte
+      // split_tile_2bit uses tiling with 128-row tiles, so H must be padded to a multiple of 128
+      // The formula (y/128)*W*128 + ... assumes tiles of 128 rows
+      size_t padded_H = ((actual_split_size + 127) / 128) * 128;
+      
+      // Pad the input b_values to padded_H rows with zeros
+      // Original has actual_split_size rows, each row has K elements at 2 bits each
+      size_t original_bits = actual_split_size * kernel_params.K.uint32Value * 2;
+      size_t padded_bits = padded_H * kernel_params.K.uint32Value * 2;
+      size_t padded_bytes = (padded_bits + 7) / 8;
+      size_t padded_int32s = (padded_bytes + 3) / 4;
+      
+      std::vector<int32_t> b_values_padded(padded_int32s, 0);  // Zero-initialized for padding
+      // Copy original data - it's stored row-by-row at 2 bits per element
+      // For actual_split_size rows, we have (actual_split_size * K * 2) bits = (actual_split_size * K / 4) bytes
+      size_t original_bytes = (original_bits + 7) / 8;
+      std::memcpy(b_values_padded.data(), b_values.data(), std::min(b_values.size(), original_bytes));
+
+      // split_tile_2bit outputs 2 bit planes for padded_H*W elements
+      // Output size in int32_t: (padded_H * W * 2 bits + 31) / 32
+      size_t output_bits = padded_H * kernel_params.K.uint32Value * 2;
+      size_t output_int32s = (output_bits + 31) / 32;
+      std::vector<int32_t> b_values_shuff_32(output_int32s, 0);
+      
+      // Pass padded_H to split_tile_2bit so tiling and bit plane layout matches kernel expectations
+      split_tile_2bit(b_values_shuff_32.data(), b_values_padded.data(), kernel_params.K.uint32Value, padded_H);
+
+      LOGS(logger, INFO) << "Debug gets here 3";
+      
       uint8_t* bytes = reinterpret_cast<uint8_t*>(b_values_shuff_32.data());
-      std::vector<uint8_t> b_values_shuff(bytes, bytes + b_values.size());
+      size_t output_bytes = output_int32s * sizeof(int32_t);
+      std::vector<uint8_t> b_values_shuff(bytes, bytes + output_bytes);
       TensorInfo b_info = {};
       ORT_RETURN_IF_ERROR(qnn_model_wrapper.GetTensorInfo(node_inputs[1], b_info));
-      b_info.shape = {1, 2, kernel_params.K.uint32Value / 8, hints.split_size};  // reshape to 1, 2, N, K/block_size
+      // Use padded_H in shape since split_tile_2bit requires 128-row tiles and kernel expects this layout
+      b_info.shape = {1, 2, kernel_params.K.uint32Value / 8, static_cast<uint32_t>(padded_H)};
       QnnTensorWrapper b_tensor_wrapper(
           b_split_name,
           QNN_TENSOR_TYPE_STATIC,  // It's an initializer
@@ -443,6 +495,8 @@ Status MatMulNBitsOpBuilder::ProcessInputs([[maybe_unused]]QnnModelWrapper& qnn_
       ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(b_tensor_wrapper)), "Failed to add shuffled B tensor");
       split_b_tensor_names.push_back(b_split_name);
 
+      LOGS(logger, INFO) << "Debug gets here 4";
+
       std::vector<uint8_t> scale_values;
       std::string scale_input_name = node_unit.Name() + "Scale_" + std::to_string(i);
       LOGS(logger, INFO) << "Processing scale input: " << scale_input_name;
@@ -451,18 +505,39 @@ Status MatMulNBitsOpBuilder::ProcessInputs([[maybe_unused]]QnnModelWrapper& qnn_
       size_t scale_chunk_size = 2 * tensor_elements / 64;  // each chunk has target_out_split_size*in_size elements/ 64 elements, they are in a 16-bit format.
       LOGS(logger, INFO) << "Scale chunk size: " << scale_chunk_size;
       // split the scale_values into chunks of size scale_chunk_size.
-      scale_values.assign(scale_values_orig.begin() + i * scale_chunk_size, scale_values_orig.begin() + (i + 1) * scale_chunk_size);
+      size_t scale_offset = i * (2 * hints.split_size * kernel_params.K.uint32Value / 64);
+      size_t scale_end = scale_offset + scale_chunk_size;
+      
+      if (scale_end > scale_values_orig.size()) {
+        ORT_THROW("Scale tensor shuffle split exceeds original size");
+      }
+      
+      scale_values.assign(scale_values_orig.begin() + scale_offset, scale_values_orig.begin() + scale_end);
 
       // ensure allignment of scale_values to 16 bits
-      std::vector<uint16_t> scale_values_shuff_16(scale_values.size() / sizeof(uint16_t), 0);
-      transpose(scale_values_shuff_16.data(), reinterpret_cast<uint16_t*>(scale_values.data()), kernel_params.K.uint32Value / kernel_params.block.uint32Value, hints.split_size);
+      // After transpose: output needs padded_H rows to match kernel expectations (S_HEIGHT = OUT_CHAN)
+      // Input is (actual_split_size, K/block), output is (K/block, padded_H) with zero-padding
+      size_t num_scale_elements = (kernel_params.K.uint32Value / kernel_params.block.uint32Value) * padded_H;
+      std::vector<uint16_t> scale_values_shuff_16(num_scale_elements, 0);  // Zero-initialize for padding
+      
+      // Transpose and pad: for each output row (K/block rows), copy actual_split_size values
+      uint16_t* scale_data_16 = reinterpret_cast<uint16_t*>(scale_values.data());
+      size_t rows_out = kernel_params.K.uint32Value / kernel_params.block.uint32Value;
+      for (size_t out_row = 0; out_row < rows_out; ++out_row) {
+        for (size_t col = 0; col < actual_split_size; ++col) {
+          // Input column-major: scale_data_16[col * rows_out + out_row]
+          // Output row-major: scale_values_shuff_16[out_row * padded_H + col]
+          scale_values_shuff_16[out_row * padded_H + col] = scale_data_16[col * rows_out + out_row];
+        }
+        // Elements from actual_split_size to padded_H are already zero-initialized
+      }
 
       uint8_t* scale_bytes = reinterpret_cast<uint8_t*>(scale_values_shuff_16.data());
-      std::vector<uint8_t> scale_values_shuff(scale_bytes, scale_bytes + scale_values.size());
+      std::vector<uint8_t> scale_values_shuff(scale_bytes, scale_bytes + num_scale_elements * sizeof(uint16_t));
 
       TensorInfo scales_info = {};
       ORT_RETURN_IF_ERROR(qnn_model_wrapper.GetTensorInfo(node_inputs[2], scales_info));
-      scales_info.shape = {1, 1, hints.split_size, kernel_params.K.uint32Value / (kernel_params.block.uint32Value)};  // reshape to 1, 2, N, K/block_size
+      scales_info.shape = {1, 1, static_cast<uint32_t>(padded_H), kernel_params.K.uint32Value / (kernel_params.block.uint32Value)};  // Use padded_H
       QnnTensorWrapper scale_tensor_wrapper(
           scale_input_name,
           QNN_TENSOR_TYPE_STATIC,  // It's an initializer
@@ -477,71 +552,69 @@ Status MatMulNBitsOpBuilder::ProcessInputs([[maybe_unused]]QnnModelWrapper& qnn_
       std::string zeros_input_name = node_unit.Name() + "Zeros_" + std::to_string(i);
       LOGS(logger, INFO) << "Processing zeros input: " << zeros_input_name;
 
-      // Calculate the expected zeros size based on the split_size and block_size
+      // Calculate the expected zeros size based on the actual_split_size and block_size
       // Zeros tensor is [N, zero_points_size] where zero_points_size = (k_blocks * bits + 7) / 8
-      // Each split gets [split_size, zero_points_size] bytes
+      // Each split gets [actual_split_size, zero_points_size] bytes
       uint32_t k_blocks = kernel_params.K.uint32Value / kernel_params.block.uint32Value;
       size_t zero_points_size = (k_blocks * 2 + 7) / 8;  // bits per row packed into bytes
-      size_t zeros_chunk_size = hints.split_size * zero_points_size;
+      size_t zeros_chunk_size = actual_split_size * zero_points_size;
       
-      LOGS(logger, INFO) << "Zeros chunk size: " << zeros_chunk_size;
+      LOGS(logger, INFO) << "Zeros chunk size: " << zeros_chunk_size << " (actual_split_size: " << actual_split_size << ")";
       
-      size_t zeros_offset = i * zeros_chunk_size;
-      size_t zeros_end = std::min(zeros_offset + zeros_chunk_size, zero_values_orig.size());
+      size_t zeros_offset = i * (hints.split_size * zero_points_size);  // Offset uses original split_size stride
+      size_t zeros_end = zeros_offset + zeros_chunk_size;
       
-      // Extract the chunk (might be smaller than expected due to original data size)
-      size_t actual_chunk_size = (zeros_end > zeros_offset) ? (zeros_end - zeros_offset) : 0;
-      if (actual_chunk_size > 0) {
-        zero_values.assign(zero_values_orig.begin() + zeros_offset, zero_values_orig.begin() + zeros_end);
+      if (zeros_end > zero_values_orig.size()) {
+        ORT_THROW("Zeros tensor shuffle split exceeds original size");
       }
       
-      // Pad to the expected size
-      if (zero_values.size() < zeros_chunk_size) {
-        zero_values.resize(zeros_chunk_size, 0);
-      }
+      zero_values.assign(zero_values_orig.begin() + zeros_offset, zero_values_orig.begin() + zeros_end);
 
-      // Repack zeros from row-padded format to densely packed format
-      // Input: split_size rows, each with zero_points_size bytes (may have padding bits)
-      // Output: k_blocks * split_size 2-bit values packed densely
-      size_t dense_size = (k_blocks * hints.split_size * 2 + 7) / 8;
-      std::vector<uint8_t> zero_values_dense(dense_size, 0);
+      // Repack zeros from row-padded format to densely packed format, then pad to padded_H
+      // Input: actual_split_size rows, each with zero_points_size bytes (may have padding bits)
+      // Output: k_blocks * padded_H 2-bit values packed densely (with zero-padding for extra rows)
+      size_t dense_size = (k_blocks * padded_H * 2 + 7) / 8;  // Use padded_H
+      std::vector<uint8_t> zero_values_dense(dense_size, 0);  // Zero-initialize for padding
       
       size_t output_bit_idx = 0;
-      for (size_t row = 0; row < hints.split_size; ++row) {
+      for (size_t row = 0; row < padded_H; ++row) {
         for (size_t col = 0; col < k_blocks; ++col) {
-          // Extract 2-bit value from input
-          size_t input_bit_idx = row * zero_points_size * 8 + col * 2;
-          size_t input_byte_idx = input_bit_idx / 8;
-          size_t input_bit_offset = input_bit_idx % 8;
-          uint8_t value = (zero_values[input_byte_idx] >> input_bit_offset) & 0x3;
-          
-          // Write to densely packed output
-          size_t output_byte_idx = output_bit_idx / 8;
-          size_t output_bit_offset = output_bit_idx % 8;
-          zero_values_dense[output_byte_idx] |= (value << output_bit_offset);
+          if (row < actual_split_size) {
+            // Extract 2-bit value from input
+            size_t input_bit_idx = row * zero_points_size * 8 + col * 2;
+            size_t input_byte_idx = input_bit_idx / 8;
+            size_t input_bit_offset = input_bit_idx % 8;
+            uint8_t value = (zero_values[input_byte_idx] >> input_bit_offset) & 0x3;
+            
+            // Write to densely packed output
+            size_t output_byte_idx = output_bit_idx / 8;
+            size_t output_bit_offset = output_bit_idx % 8;
+            zero_values_dense[output_byte_idx] |= (value << output_bit_offset);
+          }
+          // else: already zero-initialized for padding rows
           output_bit_idx += 2;
         }
       }
 
       // split_transpose_2bit transposes from (H, W) to (W, H) and separates bit planes
-      // Input: (split_size, k_blocks) of 2-bit values, densely packed
-      // Output: (k_blocks, split_size) in 2 bit planes
-      size_t output_bits_per_plane = k_blocks * hints.split_size;
+      // Input: (padded_H, k_blocks) of 2-bit values, densely packed (with zero padding)
+      // Output: (k_blocks, padded_H) in 2 bit planes
+      size_t output_bits_per_plane = k_blocks * padded_H;
       size_t output_bytes_per_plane = (output_bits_per_plane + 7) / 8;
       size_t output_total_bytes = 2 * output_bytes_per_plane;
       
-      // Allocate output buffer with correct size (not input size!)
+      // Allocate output buffer with correct size
       std::vector<int32_t> zero_values_shuff_32((output_total_bytes + 3) / sizeof(int32_t), 0);
-      split_transpose_2bit(zero_values_shuff_32.data(), reinterpret_cast<int32_t*>(zero_values_dense.data()), kernel_params.K.uint32Value / kernel_params.block.uint32Value, hints.split_size);
+      split_transpose_2bit(zero_values_shuff_32.data(), reinterpret_cast<int32_t*>(zero_values_dense.data()), kernel_params.K.uint32Value / kernel_params.block.uint32Value, padded_H);
 
       uint8_t* zero_bytes = reinterpret_cast<uint8_t*>(zero_values_shuff_32.data());
       std::vector<uint8_t> zero_values_shuff(zero_bytes, zero_bytes + output_total_bytes);
 
       TensorInfo zero_info = {};
       ORT_RETURN_IF_ERROR(qnn_model_wrapper.GetTensorInfo(node_inputs[3], zero_info));
-      // After split_transpose_2bit: shape reflects transposed dimensions (k_blocks, split_size) with 2 bit planes
-      // Each bit plane has k_blocks rows, with split_size bits per row packed into bytes
-      uint32_t bytes_per_row = (hints.split_size + 7) / 8;
+      // After split_transpose_2bit: shape reflects transposed dimensions (k_blocks, padded_H) with 2 bit planes
+      // Each bit plane has k_blocks rows, with padded_H bits per row packed into bytes
+      uint32_t bytes_per_row = (padded_H + 7) / 8;
       zero_info.shape = {1, 2, k_blocks, bytes_per_row};
       QnnTensorWrapper zeros_tensor_wrapper(
           zeros_input_name,
@@ -608,13 +681,19 @@ Status MatMulNBitsOpBuilder::ProcessAttributesAndOutputs([[maybe_unused]]QnnMode
   std::vector<std::string> split_output_tensor_names;
   if (hints.split_count > 1) {
     for (size_t i = 0; i < hints.split_count; ++i) {
-        TensorInfo output_info = {};
+      // Calculate actual split size for this chunk
+      size_t remaining_n = kernel_params.N.uint32Value - (i * hints.split_size);
+      size_t actual_split_size = std::min(static_cast<size_t>(hints.split_size), remaining_n);
+      // Kernel requires OUT_CHAN to be multiple of 128, so pad to next multiple
+      size_t padded_split_size = ((actual_split_size + 127) / 128) * 128;
+      
+      TensorInfo output_info = {};
       ORT_RETURN_IF_ERROR(qnn_model_wrapper.GetTensorInfo(node_outputs[0], output_info));
-      output_info.shape[output_info.shape.size()-1] = hints.split_size;
+      output_info.shape[output_info.shape.size()-1] = actual_split_size;  // Use actual size for output shape
       // make some output tensors.
       std::string output_name = node_unit.Name() + "Output_" + std::to_string(i);
       split_output_tensor_names.push_back(output_name);
-      LOGS(logger, INFO) << "Added output tensor: " << output_name << " with shape_size " << output_info.shape.size();
+      LOGS(logger, INFO) << "Added output tensor: " << output_name << " with shape_size " << output_info.shape.size() << " actual_split_size: " << actual_split_size << " (padded: " << padded_split_size << ")";
       for (size_t j = 0; j < output_info.shape.size(); ++j) {
         LOGS(logger, INFO) << "Output tensor shape[" << j << "]: " << output_info.shape[j];
       }
@@ -694,92 +773,92 @@ Status MatMulNBitsOpBuilder::ProcessAttributesAndOutputs([[maybe_unused]]QnnMode
     }
 
     if (hints.split_count != 1) {
-      if (hints.split_size % 256 == 0 && hints.split_size > 256) {
-        const uint32_t chunk = 256;
-        const uint32_t num_chunks = hints.split_size / chunk;
-        ORT_RETURN_IF_NOT(num_chunks >= 1, "split_size/256 must be >= 1");
+      // if (hints.split_size % 256 == 0 && hints.split_size > 256) {
+      //   const uint32_t chunk = 256;
+      //   const uint32_t num_chunks = hints.split_size / chunk;
+      //   ORT_RETURN_IF_NOT(num_chunks >= 1, "split_size/256 must be >= 1");
 
-        LOGS(logger, INFO) << "Splitting output tensor into " << num_chunks << " chunks of size " << chunk;
+      //   LOGS(logger, INFO) << "Splitting output tensor into " << num_chunks << " chunks of size " << chunk;
 
-        std::vector<std::string> extra_split_output_tensor_names;
+      //   std::vector<std::string> extra_split_output_tensor_names;
 
-        for (size_t i = 0; i < hints.split_count; ++i) {
-          std::vector<std::string> group_of_output_names;
-          group_of_output_names.reserve(num_chunks);
+      //   for (size_t i = 0; i < hints.split_count; ++i) {
+      //     std::vector<std::string> group_of_output_names;
+      //     group_of_output_names.reserve(num_chunks);
 
-          for (uint32_t j = 0; j < num_chunks; ++j) {
-            std::string split_output_name =
-                node_unit.Name() + "Output_" + std::to_string(i) + "_split_" + std::to_string(j);
+      //     for (uint32_t j = 0; j < num_chunks; ++j) {
+      //       std::string split_output_name =
+      //           node_unit.Name() + "Output_" + std::to_string(i) + "_split_" + std::to_string(j);
 
-            TensorInfo output_info = {};
-            ORT_RETURN_IF_ERROR(qnn_model_wrapper.GetTensorInfo(node_outputs[0], output_info));
+      //       TensorInfo output_info = {};
+      //       ORT_RETURN_IF_ERROR(qnn_model_wrapper.GetTensorInfo(node_outputs[0], output_info));
 
-            const size_t last = output_info.shape.size() - 1;
+      //       const size_t last = output_info.shape.size() - 1;
 
-            output_info.shape[last] = chunk;
+      //       output_info.shape[last] = chunk;
 
-            QnnTensorWrapper split_output_tensor(
-                split_output_name,
-                QNN_TENSOR_TYPE_NATIVE,
-                output_info.qnn_data_type,
-                output_info.quant_param.Copy(),
-                std::move(output_info.shape));
+      //       QnnTensorWrapper split_output_tensor(
+      //           split_output_name,
+      //           QNN_TENSOR_TYPE_NATIVE,
+      //           output_info.qnn_data_type,
+      //           output_info.quant_param.Copy(),
+      //           std::move(output_info.shape));
 
-            ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(split_output_tensor)),
-                              "Failed to add split output tensor");
-            extra_split_output_tensor_names.push_back(split_output_name);
-            group_of_output_names.push_back(split_output_name);
-          }
+      //       ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(split_output_tensor)),
+      //                         "Failed to add split output tensor");
+      //       extra_split_output_tensor_names.push_back(split_output_name);
+      //       group_of_output_names.push_back(split_output_name);
+      //     }
 
-          // ----- Split params -----
-          std::vector<std::string> split_param_names;
+      //     // ----- Split params -----
+      //     std::vector<std::string> split_param_names;
 
-          // axis = last dim
-          int output_ndim = node_outputs[0].node_arg.Shape()->dim_size();
-          Qnn_Scalar_t axis_qnn_scalar = QNN_SCALAR_INIT;
-          axis_qnn_scalar.dataType = QNN_DATATYPE_UINT_32;
-          axis_qnn_scalar.int32Value = output_ndim - 1;
+      //     // axis = last dim
+      //     int output_ndim = node_outputs[0].node_arg.Shape()->dim_size();
+      //     Qnn_Scalar_t axis_qnn_scalar = QNN_SCALAR_INIT;
+      //     axis_qnn_scalar.dataType = QNN_DATATYPE_UINT_32;
+      //     axis_qnn_scalar.int32Value = output_ndim - 1;
 
-          QnnParamWrapper axis_param(
-              node_unit.Index(), node_unit.Name() + "_split_axis_" + std::to_string(i),
-              QNN_OP_SPLIT_PARAM_AXIS, axis_qnn_scalar);
-          split_param_names.push_back(axis_param.GetParamTensorName());
-          qnn_model_wrapper.AddParamWrapper(std::move(axis_param));
+      //     QnnParamWrapper axis_param(
+      //         node_unit.Index(), node_unit.Name() + "_split_axis_" + std::to_string(i),
+      //         QNN_OP_SPLIT_PARAM_AXIS, axis_qnn_scalar);
+      //     split_param_names.push_back(axis_param.GetParamTensorName());
+      //     qnn_model_wrapper.AddParamWrapper(std::move(axis_param));
 
-          // split_index = cumulative boundaries excluding 0
-          // e.g., for 1024 -> 4x256: {256, 512, 768}
-          std::vector<uint32_t> split_index;
-          split_index.reserve(num_chunks ? (num_chunks - 1) : 0);
-          for (uint32_t k = 1; k < num_chunks; ++k) {
-            split_index.push_back(k * chunk);
-          }
+      //     // split_index = cumulative boundaries excluding 0
+      //     // e.g., for 1024 -> 4x256: {256, 512, 768}
+      //     std::vector<uint32_t> split_index;
+      //     split_index.reserve(num_chunks ? (num_chunks - 1) : 0);
+      //     for (uint32_t k = 1; k < num_chunks; ++k) {
+      //       split_index.push_back(k * chunk);
+      //     }
 
-          // The SPLIT_INDEX tensor is a 1-D param with length = split_index.size()
-          std::vector<uint32_t> split_dim{static_cast<uint32_t>(split_index.size())};
-          QnnParamWrapper split_param(
-              node_unit.Index(), node_unit.Name() + "_split_idx_" + std::to_string(i),
-              QNN_OP_SPLIT_PARAM_SPLIT_INDEX,
-              std::move(split_dim),
-              std::move(split_index));
-          split_param_names.push_back(split_param.GetParamTensorName());
-          qnn_model_wrapper.AddParamWrapper(std::move(split_param));
+      //     // The SPLIT_INDEX tensor is a 1-D param with length = split_index.size()
+      //     std::vector<uint32_t> split_dim{static_cast<uint32_t>(split_index.size())};
+      //     QnnParamWrapper split_param(
+      //         node_unit.Index(), node_unit.Name() + "_split_idx_" + std::to_string(i),
+      //         QNN_OP_SPLIT_PARAM_SPLIT_INDEX,
+      //         std::move(split_dim),
+      //         std::move(split_index));
+      //     split_param_names.push_back(split_param.GetParamTensorName());
+      //     qnn_model_wrapper.AddParamWrapper(std::move(split_param));
 
-          // Create Split node
-          std::string split_name = node_unit.Name() + "Split_" + std::to_string(i);
-          ORT_RETURN_IF_NOT(qnn_model_wrapper.CreateQnnNode(
-                                split_name,
-                                QNN_OP_PACKAGE_NAME_QTI_AISW,
-                                QNN_OP_SPLIT,
-                                {split_output_tensor_names[i]},    // input
-                                std::move(group_of_output_names),  // outputs
-                                std::move(split_param_names),
-                                do_op_validation),
-                            "Failed to add Split node.");
-        }
+      //     // Create Split node
+      //     std::string split_name = node_unit.Name() + "Split_" + std::to_string(i);
+      //     ORT_RETURN_IF_NOT(qnn_model_wrapper.CreateQnnNode(
+      //                           split_name,
+      //                           QNN_OP_PACKAGE_NAME_QTI_AISW,
+      //                           QNN_OP_SPLIT,
+      //                           {split_output_tensor_names[i]},    // input
+      //                           std::move(group_of_output_names),  // outputs
+      //                           std::move(split_param_names),
+      //                           do_op_validation),
+      //                       "Failed to add Split node.");
+      //   }
 
-        // replace for downstream concat
-        split_output_tensor_names = std::move(extra_split_output_tensor_names);
-      }
+      //   // replace for downstream concat
+      //   split_output_tensor_names = std::move(extra_split_output_tensor_names);
+      // }
       std::vector<std::string> param_tensor_names_concat;
       int output_ndim = node_outputs[0].node_arg.Shape()->dim_size();
       int32_t default_axis = output_ndim - 1;
