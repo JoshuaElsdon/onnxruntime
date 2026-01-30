@@ -304,6 +304,7 @@ class QnnModelWrapper {
     bool tile = false;
     bool crouton = false;
     bool kernel_transpose = false;
+    bool dual = false;  // true ⇒ use dual 8-bit output for higher accuracy (twin kernel)
   };
 
   ParsedHints parse_hints( const int output_dimension, const int act_in_dim, const logging::Logger& logger) {
@@ -324,6 +325,10 @@ class QnnModelWrapper {
     if (model_hints.find("transpose") != std::string::npos) {
       hints.kernel_transpose = true;
       LOGS(logger, INFO) << "Model hint 'transpose' found.";
+    }
+    if (model_hints.find("dual") != std::string::npos) {
+      hints.dual = true;
+      LOGS(logger, INFO) << "Model hint 'dual' found - using dual 8-bit output for higher accuracy.";
     }
     if (model_hints.find("tile") != std::string::npos) {
       hints.tile = true;

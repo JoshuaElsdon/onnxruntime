@@ -983,6 +983,18 @@ Status MatMulNBitsOpBuilder::ProcessAttributesAndOutputs([[maybe_unused]]QnnMode
 
     LOGS(logger, INFO) << "Scale: " << scale << ", Offset: " << offset;
 
+    // Dual output: compute residual scale/offset for second 8-bit output
+    // The residual captures what the first quantization missed, bounded by scale/2
+    // Using scale/256 gives ~16 bits of effective precision
+    float scale2 = scale / 256.0f;
+    // QNN converts negative offset to positive for kernel: -128 becomes 128
+    // This centers the residual at quant=128 (middle of uint8 range)
+    int32_t offset2 = -128;
+
+    if (hints.dual) {
+      LOGS(logger, INFO) << "Dual output enabled - Scale2: " << scale2 << ", Offset2: " << offset2;
+    }
+
     // If we tile along activations, we need to concat the outputs along two dimensions
     // collect the intermediary output names in this case
     // If this isn't happening, then we just default
@@ -997,8 +1009,10 @@ Status MatMulNBitsOpBuilder::ProcessAttributesAndOutputs([[maybe_unused]]QnnMode
       LOGS(logger, INFO) << "Creating UnpackWeightsNBits node for split: " << i;
       // create the weights tensor name
       std::string weights_name = node_unit.Name() + "_weights_" + std::to_string(i);
+      std::string weights_name_residual = node_unit.Name() + "_weights_residual_" + std::to_string(i);
 
       // Unpack weights now transposes within it:
+      // Note: QNN HTP backfills tensor dimensions to 4D, so rank 2 becomes {1, 1, dim0, dim1}
       std::vector<uint32_t> weights_shape = {hints.split_size, kernel_params.K.uint32Value};
       if (hints.kernel_transpose)
       {
@@ -1016,6 +1030,8 @@ Status MatMulNBitsOpBuilder::ProcessAttributesAndOutputs([[maybe_unused]]QnnMode
 
       LOGS(logger, INFO) << "Weights " << weights_name << " tensor shape for unpacked weights: " << weights_shape[0] << "," << weights_shape[1];
 
+      // Create main weights tensor
+      std::vector<uint32_t> weights_shape_copy = weights_shape;  // Copy for residual tensor
       QnnTensorWrapper weights_tensor(weights_name,
                                       QNN_TENSOR_TYPE_NATIVE,
                                       QNN_DATATYPE_UFIXED_POINT_8,
@@ -1023,16 +1039,40 @@ Status MatMulNBitsOpBuilder::ProcessAttributesAndOutputs([[maybe_unused]]QnnMode
                                       std::move(weights_shape));
       ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(weights_tensor)), "Failed to add tensor.");
 
-      std::vector<std::string> param_tensor_names_split = load_parmams_to_qnn(qnn_model_wrapper, node_unit.Index(), kernel_params, node_unit.Name() + "_split_" + std::to_string(i));
-      std::string unpack_name = node_unit.Name() + "_unpack_" + std::to_string(i);
-      ORT_RETURN_IF_NOT(qnn_model_wrapper.CreateQnnNode(unpack_name,
-                                                        "UnpackWeightsNBits",
-                                                        "UnpackWeightsNBits",
-                                                        {split_b_tensor_names[i], split_scales_tensor_names[i], split_zeros_tensor_names[i]},
-                                                        {weights_name},
-                                                        std::move(param_tensor_names_split),
-                                                        do_op_validation),
-                        "Failed to add fused MatMulNBits fused node.");
+      // For dual output: create residual weights tensor and use twin kernel
+      if (hints.dual) {
+        LOGS(logger, INFO) << "Creating residual weights tensor for dual output: " << weights_name_residual;
+        QnnTensorWrapper weights_tensor_residual(weights_name_residual,
+                                        QNN_TENSOR_TYPE_NATIVE,
+                                        QNN_DATATYPE_UFIXED_POINT_8,
+                                        std::move(QnnQuantParamsWrapper(scale2, offset2)),
+                                        std::move(weights_shape_copy));
+        ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(weights_tensor_residual)), "Failed to add residual tensor.");
+
+        std::vector<std::string> param_tensor_names_split = load_parmams_to_qnn(qnn_model_wrapper, node_unit.Index(), kernel_params, node_unit.Name() + "_split_" + std::to_string(i));
+        std::string unpack_name = node_unit.Name() + "_unpack_" + std::to_string(i);
+        // Twin kernel outputs two tensors: main and residual
+        ORT_RETURN_IF_NOT(qnn_model_wrapper.CreateQnnNode(unpack_name,
+                                                          "UnpackWeightsNBits",
+                                                          "UnpackWeightsNBits",
+                                                          {split_b_tensor_names[i], split_scales_tensor_names[i], split_zeros_tensor_names[i]},
+                                                          {weights_name, weights_name_residual},
+                                                          std::move(param_tensor_names_split),
+                                                          do_op_validation),
+                          "Failed to add dual output UnpackWeightsNBits node.");
+      } else {
+        // Single output mode (original behavior)
+        std::vector<std::string> param_tensor_names_split = load_parmams_to_qnn(qnn_model_wrapper, node_unit.Index(), kernel_params, node_unit.Name() + "_split_" + std::to_string(i));
+        std::string unpack_name = node_unit.Name() + "_unpack_" + std::to_string(i);
+        ORT_RETURN_IF_NOT(qnn_model_wrapper.CreateQnnNode(unpack_name,
+                                                          "UnpackWeightsNBits",
+                                                          "UnpackWeightsNBits",
+                                                          {split_b_tensor_names[i], split_scales_tensor_names[i], split_zeros_tensor_names[i]},
+                                                          {weights_name},
+                                                          std::move(param_tensor_names_split),
+                                                          do_op_validation),
+                          "Failed to add fused MatMulNBits fused node.");
+      }
 
       std::vector<std::string> param_tensor_names_mul;
 
@@ -1225,18 +1265,96 @@ Status MatMulNBitsOpBuilder::ProcessAttributesAndOutputs([[maybe_unused]]QnnMode
           QnnParamWrapper p1(node_unit.Index(), node_unit.Name() + std::to_string(i) + std::to_string(j), QNN_OP_MAT_MUL_PARAM_TRANSPOSE_IN1, t1);
           param_tensor_names_mul.push_back(p1.GetParamTensorName());
           qnn_model_wrapper.AddParamWrapper(std::move(p1));
-          std::string matmul_op_name = node_unit.Name() + "_mat_mul_" + std::to_string(i) + "_+_" + std::to_string(j);
 
           // a_tile_names[j] cannot be accessed. Why?
           LOGS(logger, INFO) << "Created name var " << a_tile_names[j];
-          LOGS(logger, INFO) << "Creating MatMul node: " << matmul_op_name << " with tensors " << a_tile_names[j] << " and " << weights_name << " outputting to " << split_output_tensor_names[j];
-          ORT_RETURN_IF_NOT(qnn_model_wrapper.CreateQnnNode(matmul_op_name, QNN_OP_PACKAGE_NAME_QTI_AISW,
-                                                            QNN_OP_MAT_MUL,
-                                                            {a_tile_names[j], weights_name}, {split_output_tensor_names[i*hints.act_tile_count + j]},
-                                                            std::move(param_tensor_names_mul), do_op_validation),
-                            "Failed to add fused Matmul node.");
-          LOGS(logger, INFO) << "Created matmul";
-          matmul_output_names.push_back(split_output_tensor_names[i*hints.act_tile_count + j]);
+          
+          if (hints.dual) {
+            // Dual output mode: MatMul1 + MatMul2 with Add
+            std::string final_output = split_output_tensor_names[i*hints.act_tile_count + j];
+            std::string matmul1_output = node_unit.Name() + "_matmul1_out_" + std::to_string(i) + "_" + std::to_string(j);
+            std::string matmul2_output = node_unit.Name() + "_matmul2_out_" + std::to_string(i) + "_" + std::to_string(j);
+            
+            // Create intermediate tensors for MatMul1 and MatMul2 outputs
+            TensorInfo output_info = {};
+            ORT_RETURN_IF_ERROR(qnn_model_wrapper.GetTensorInfo(node_outputs[0], output_info));
+            // Use the tile output shape
+            std::vector<uint32_t> tile_shape = {1, static_cast<uint32_t>(hints.act_tile_size), static_cast<uint32_t>(hints.split_size)};
+            
+            // MatMul1 uses the original output quantization
+            QnnTensorWrapper matmul1_tensor(matmul1_output,
+                                            QNN_TENSOR_TYPE_NATIVE,
+                                            output_info.qnn_data_type,
+                                            output_info.quant_param.Copy(),
+                                            std::vector<uint32_t>(tile_shape));
+            ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(matmul1_tensor)), "Failed to add matmul1 output tensor.");
+            
+            // MatMul2 (residual) - use same quantization as MatMul1
+            // The residual contribution is smaller but will be properly scaled by the weights' quantization
+            // Using same output quantization allows ElementWiseAdd to work correctly
+            LOGS(logger, INFO) << "MatMul2 output using same quantization as MatMul1";
+            QnnTensorWrapper matmul2_tensor(matmul2_output,
+                                            QNN_TENSOR_TYPE_NATIVE,
+                                            output_info.qnn_data_type,
+                                            output_info.quant_param.Copy(),
+                                            std::vector<uint32_t>(tile_shape));
+            ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(matmul2_tensor)), "Failed to add matmul2 output tensor.");
+            
+            // Create first MatMul: A_tile × W1
+            std::string matmul1_op_name = node_unit.Name() + "_mat_mul_main_" + std::to_string(i) + "_" + std::to_string(j);
+            LOGS(logger, INFO) << "Creating dual MatMul1 (tiled) node: " << matmul1_op_name;
+            ORT_RETURN_IF_NOT(qnn_model_wrapper.CreateQnnNode(matmul1_op_name, QNN_OP_PACKAGE_NAME_QTI_AISW,
+                                                              QNN_OP_MAT_MUL,
+                                                              {a_tile_names[j], weights_name}, {matmul1_output},
+                                                              std::move(param_tensor_names_mul), do_op_validation),
+                              "Failed to add main Matmul node (tiled).");
+            
+            // Create second MatMul params (need new params for unique names)
+            std::vector<std::string> param_tensor_names_mul2;
+            Qnn_Scalar_t t0_2 = QNN_SCALAR_INIT;
+            t0_2.dataType = QNN_DATATYPE_BOOL_8;
+            t0_2.bool8Value = 0;
+            QnnParamWrapper p0_2(node_unit.Index(), node_unit.Name() + "_res_" + std::to_string(i) + "_" + std::to_string(j), QNN_OP_MAT_MUL_PARAM_TRANSPOSE_IN0, t0_2);
+            param_tensor_names_mul2.push_back(p0_2.GetParamTensorName());
+            qnn_model_wrapper.AddParamWrapper(std::move(p0_2));
+            
+            Qnn_Scalar_t t1_2 = QNN_SCALAR_INIT;
+            t1_2.dataType = QNN_DATATYPE_BOOL_8;
+            t1_2.bool8Value = 0;
+            QnnParamWrapper p1_2(node_unit.Index(), node_unit.Name() + "_res_" + std::to_string(i) + "_" + std::to_string(j), QNN_OP_MAT_MUL_PARAM_TRANSPOSE_IN1, t1_2);
+            param_tensor_names_mul2.push_back(p1_2.GetParamTensorName());
+            qnn_model_wrapper.AddParamWrapper(std::move(p1_2));
+            
+            // Create second MatMul: A_tile × W2 (residual weights)
+            std::string matmul2_op_name = node_unit.Name() + "_mat_mul_residual_" + std::to_string(i) + "_" + std::to_string(j);
+            LOGS(logger, INFO) << "Creating dual MatMul2 (tiled) node: " << matmul2_op_name;
+            ORT_RETURN_IF_NOT(qnn_model_wrapper.CreateQnnNode(matmul2_op_name, QNN_OP_PACKAGE_NAME_QTI_AISW,
+                                                              QNN_OP_MAT_MUL,
+                                                              {a_tile_names[j], weights_name_residual}, {matmul2_output},
+                                                              std::move(param_tensor_names_mul2), do_op_validation),
+                              "Failed to add residual Matmul node (tiled).");
+            
+            // Add the two MatMul results: final_output = matmul1 + matmul2
+            std::string add_op_name = node_unit.Name() + "_dual_add_" + std::to_string(i) + "_" + std::to_string(j);
+            LOGS(logger, INFO) << "Creating ElementWiseAdd (tiled) node: " << add_op_name;
+            ORT_RETURN_IF_NOT(qnn_model_wrapper.CreateQnnNode(add_op_name, QNN_OP_PACKAGE_NAME_QTI_AISW,
+                                                              QNN_OP_ELEMENT_WISE_ADD,
+                                                              {matmul1_output, matmul2_output}, {final_output},
+                                                              {}, do_op_validation),
+                              "Failed to add dual output Add node (tiled).");
+            matmul_output_names.push_back(final_output);
+          } else {
+            // Single MatMul (original behavior)
+            std::string matmul_op_name = node_unit.Name() + "_mat_mul_" + std::to_string(i) + "_+_" + std::to_string(j);
+            LOGS(logger, INFO) << "Creating MatMul node: " << matmul_op_name << " with tensors " << a_tile_names[j] << " and " << weights_name << " outputting to " << split_output_tensor_names[j];
+            ORT_RETURN_IF_NOT(qnn_model_wrapper.CreateQnnNode(matmul_op_name, QNN_OP_PACKAGE_NAME_QTI_AISW,
+                                                              QNN_OP_MAT_MUL,
+                                                              {a_tile_names[j], weights_name}, {split_output_tensor_names[i*hints.act_tile_count + j]},
+                                                              std::move(param_tensor_names_mul), do_op_validation),
+                              "Failed to add fused Matmul node.");
+            LOGS(logger, INFO) << "Created matmul";
+            matmul_output_names.push_back(split_output_tensor_names[i*hints.act_tile_count + j]);
+          }
         }
 
 
@@ -1267,7 +1385,8 @@ Status MatMulNBitsOpBuilder::ProcessAttributesAndOutputs([[maybe_unused]]QnnMode
       }
       else
       {
-         Qnn_Scalar_t t0 = QNN_SCALAR_INIT;
+        // Non-tiled case: single MatMul (or dual MatMul + Add for hints.dual)
+        Qnn_Scalar_t t0 = QNN_SCALAR_INIT;
         t0.dataType = QNN_DATATYPE_BOOL_8;
         t0.bool8Value = 0;
         QnnParamWrapper p0(node_unit.Index(), node_unit.Name() + std::to_string(i), QNN_OP_MAT_MUL_PARAM_TRANSPOSE_IN0, t0);
@@ -1286,13 +1405,93 @@ Status MatMulNBitsOpBuilder::ProcessAttributesAndOutputs([[maybe_unused]]QnnMode
         QnnParamWrapper p1(node_unit.Index(), node_unit.Name() + std::to_string(i), QNN_OP_MAT_MUL_PARAM_TRANSPOSE_IN1, t1);
         param_tensor_names_mul.push_back(p1.GetParamTensorName());
         qnn_model_wrapper.AddParamWrapper(std::move(p1));
-        std::string matmul_op_name = node_unit.Name() + "_mat_mul_" + std::to_string(i);
-        LOGS(logger, INFO) << "Creating MatMul node: " << matmul_op_name;
-        ORT_RETURN_IF_NOT(qnn_model_wrapper.CreateQnnNode(matmul_op_name, QNN_OP_PACKAGE_NAME_QTI_AISW,
-                                                          QNN_OP_MAT_MUL,
-                                                          {node_inputs[0].node_arg.Name(), weights_name}, {split_output_tensor_names[i]},
-                                                          std::move(param_tensor_names_mul), do_op_validation),
-                          "Failed to add fused Matmul node.");
+        
+        if (hints.dual) {
+          // Dual output: create two MatMuls and add the results
+          // MatMul1: A × W1 -> intermediate1
+          // MatMul2: A × W2 -> intermediate2
+          // Result: intermediate1 + intermediate2 -> output
+          
+          std::string matmul1_output = node_unit.Name() + "_matmul1_out_" + std::to_string(i);
+          std::string matmul2_output = node_unit.Name() + "_matmul2_out_" + std::to_string(i);
+          
+          // Get output tensor info for intermediate tensors
+          TensorInfo output_info = {};
+          ORT_RETURN_IF_ERROR(qnn_model_wrapper.GetTensorInfo(node_outputs[0], output_info));
+          if (hints.split_count > 1) {
+            output_info.shape[output_info.shape.size()-1] = hints.split_size;
+          }
+          
+          // Create intermediate tensor for first MatMul
+          QnnTensorWrapper matmul1_tensor(matmul1_output,
+                                          QNN_TENSOR_TYPE_NATIVE,
+                                          output_info.qnn_data_type,
+                                          output_info.quant_param.Copy(),
+                                          std::vector<uint32_t>(output_info.shape));
+          ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(matmul1_tensor)), "Failed to add matmul1 output tensor.");
+          
+          // Create intermediate tensor for second MatMul (residual)
+          // Use same quantization as MatMul1 - the residual is already captured in the weights' quantization
+          QnnTensorWrapper matmul2_tensor(matmul2_output,
+                                          QNN_TENSOR_TYPE_NATIVE,
+                                          output_info.qnn_data_type,
+                                          output_info.quant_param.Copy(),
+                                          std::vector<uint32_t>(output_info.shape));
+          ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(matmul2_tensor)), "Failed to add matmul2 output tensor.");
+          
+          // Create first MatMul: A × W1
+          std::string matmul1_op_name = node_unit.Name() + "_mat_mul_main_" + std::to_string(i);
+          LOGS(logger, INFO) << "Creating dual MatMul1 node: " << matmul1_op_name;
+          std::vector<std::string> param_tensor_names_mul1 = param_tensor_names_mul;  // Copy params
+          ORT_RETURN_IF_NOT(qnn_model_wrapper.CreateQnnNode(matmul1_op_name, QNN_OP_PACKAGE_NAME_QTI_AISW,
+                                                            QNN_OP_MAT_MUL,
+                                                            {node_inputs[0].node_arg.Name(), weights_name}, {matmul1_output},
+                                                            std::move(param_tensor_names_mul1), do_op_validation),
+                            "Failed to add main Matmul node.");
+          
+          // Create second MatMul params (need new params for unique names)
+          std::vector<std::string> param_tensor_names_mul2;
+          Qnn_Scalar_t t0_2 = QNN_SCALAR_INIT;
+          t0_2.dataType = QNN_DATATYPE_BOOL_8;
+          t0_2.bool8Value = 0;
+          QnnParamWrapper p0_2(node_unit.Index(), node_unit.Name() + "_residual_" + std::to_string(i), QNN_OP_MAT_MUL_PARAM_TRANSPOSE_IN0, t0_2);
+          param_tensor_names_mul2.push_back(p0_2.GetParamTensorName());
+          qnn_model_wrapper.AddParamWrapper(std::move(p0_2));
+          
+          Qnn_Scalar_t t1_2 = QNN_SCALAR_INIT;
+          t1_2.dataType = QNN_DATATYPE_BOOL_8;
+          t1_2.bool8Value = hints.kernel_transpose ? 0 : 1;
+          QnnParamWrapper p1_2(node_unit.Index(), node_unit.Name() + "_residual_" + std::to_string(i), QNN_OP_MAT_MUL_PARAM_TRANSPOSE_IN1, t1_2);
+          param_tensor_names_mul2.push_back(p1_2.GetParamTensorName());
+          qnn_model_wrapper.AddParamWrapper(std::move(p1_2));
+          
+          // Create second MatMul: A × W2 (residual weights)
+          std::string matmul2_op_name = node_unit.Name() + "_mat_mul_residual_" + std::to_string(i);
+          LOGS(logger, INFO) << "Creating dual MatMul2 node: " << matmul2_op_name;
+          ORT_RETURN_IF_NOT(qnn_model_wrapper.CreateQnnNode(matmul2_op_name, QNN_OP_PACKAGE_NAME_QTI_AISW,
+                                                            QNN_OP_MAT_MUL,
+                                                            {node_inputs[0].node_arg.Name(), weights_name_residual}, {matmul2_output},
+                                                            std::move(param_tensor_names_mul2), do_op_validation),
+                            "Failed to add residual Matmul node.");
+          
+          // Add the two MatMul results: output = matmul1 + matmul2
+          std::string add_op_name = node_unit.Name() + "_dual_add_" + std::to_string(i);
+          LOGS(logger, INFO) << "Creating ElementWiseAdd node: " << add_op_name;
+          ORT_RETURN_IF_NOT(qnn_model_wrapper.CreateQnnNode(add_op_name, QNN_OP_PACKAGE_NAME_QTI_AISW,
+                                                            QNN_OP_ELEMENT_WISE_ADD,
+                                                            {matmul1_output, matmul2_output}, {split_output_tensor_names[i]},
+                                                            {}, do_op_validation),
+                            "Failed to add dual output Add node.");
+        } else {
+          // Single MatMul (original behavior)
+          std::string matmul_op_name = node_unit.Name() + "_mat_mul_" + std::to_string(i);
+          LOGS(logger, INFO) << "Creating MatMul node: " << matmul_op_name;
+          ORT_RETURN_IF_NOT(qnn_model_wrapper.CreateQnnNode(matmul_op_name, QNN_OP_PACKAGE_NAME_QTI_AISW,
+                                                            QNN_OP_MAT_MUL,
+                                                            {node_inputs[0].node_arg.Name(), weights_name}, {split_output_tensor_names[i]},
+                                                            std::move(param_tensor_names_mul), do_op_validation),
+                            "Failed to add fused Matmul node.");
+        }
       }
 
       // So it tries to make this, and THEN immediately things are bad
