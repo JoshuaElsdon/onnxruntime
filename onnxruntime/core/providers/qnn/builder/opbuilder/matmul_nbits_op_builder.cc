@@ -244,7 +244,7 @@ Status MatMulNBitsOpBuilder::ProcessInputs([[maybe_unused]]QnnModelWrapper& qnn_
   [[maybe_unused]] int64_t num_tokens = node_inputs[0].node_arg.Shape()->dim(num_A_dims - 2).dim_value();
 
   // get the hints, shuffle, scratch and split size etc.
-  [[maybe_unused]] QnnModelWrapper::ParsedHints hints = qnn_model_wrapper.parse_hints(kernel_params.N.uint32Value, num_tokens, logger);
+  [[maybe_unused]] QnnModelWrapper::ParsedHints hints = qnn_model_wrapper.parse_hints(kernel_params.N.uint32Value, static_cast<int>(num_tokens), logger);
   LOGS(logger, INFO) << "N=" << kernel_params.N.uint32Value << ", split_size=" << hints.split_size << ", split_count=" << hints.split_count;
 
   std::vector<std::string> split_b_tensor_names;
@@ -325,7 +325,7 @@ Status MatMulNBitsOpBuilder::ProcessInputs([[maybe_unused]]QnnModelWrapper& qnn_
       // print the original tensor info
       ORT_RETURN_IF_ERROR(qnn_model_wrapper.GetTensorInfo(node_inputs[1], b_info));
       // update the shape to reflect the actual split size
-      b_info.shape[0] = actual_split_size;
+      b_info.shape[0] = static_cast<uint32_t>(actual_split_size);
 
       QnnTensorWrapper b_input_tensor(
           b_input_name,
@@ -358,7 +358,7 @@ Status MatMulNBitsOpBuilder::ProcessInputs([[maybe_unused]]QnnModelWrapper& qnn_
       // get the number of dims
       [[maybe_unused]] size_t scale_num_dims = scale_info.shape.size();
       // print the shape
-      scale_info.shape[0] = actual_split_size;  // update the shape to reflect the actual split size
+      scale_info.shape[0] = static_cast<uint32_t>(actual_split_size);  // update the shape to reflect the actual split size
       QnnTensorWrapper scale_input_tensor(
           scale_input_name,
           QNN_TENSOR_TYPE_STATIC,  // It's an initializer
@@ -478,7 +478,7 @@ Status MatMulNBitsOpBuilder::ProcessInputs([[maybe_unused]]QnnModelWrapper& qnn_
       std::vector<int32_t> b_values_shuff_32(output_int32s, 0);
       
       // Pass padded_H to split_tile_2bit so tiling and bit plane layout matches kernel expectations
-      split_tile_2bit(b_values_shuff_32.data(), b_values_padded.data(), kernel_params.K.uint32Value, padded_H);
+      split_tile_2bit(b_values_shuff_32.data(), b_values_padded.data(), static_cast<int32_t>(kernel_params.K.uint32Value), static_cast<int32_t>(padded_H));
 
       LOGS(logger, INFO) << "B tiled and split with padded_H=" << padded_H;
       
@@ -610,7 +610,7 @@ Status MatMulNBitsOpBuilder::ProcessInputs([[maybe_unused]]QnnModelWrapper& qnn_
       
       // Allocate output buffer with correct size
       std::vector<int32_t> zero_values_shuff_32((output_total_bytes + 3) / sizeof(int32_t), 0);
-      split_transpose_2bit(zero_values_shuff_32.data(), reinterpret_cast<int32_t*>(zero_values_dense.data()), kernel_params.K.uint32Value / kernel_params.block.uint32Value, padded_H);
+      split_transpose_2bit(zero_values_shuff_32.data(), reinterpret_cast<int32_t*>(zero_values_dense.data()), static_cast<int32_t>(kernel_params.K.uint32Value / kernel_params.block.uint32Value), static_cast<int32_t>(padded_H));
 
       uint8_t* zero_bytes = reinterpret_cast<uint8_t*>(zero_values_shuff_32.data());
       std::vector<uint8_t> zero_values_shuff(zero_bytes, zero_bytes + output_total_bytes);
@@ -619,7 +619,7 @@ Status MatMulNBitsOpBuilder::ProcessInputs([[maybe_unused]]QnnModelWrapper& qnn_
       ORT_RETURN_IF_ERROR(qnn_model_wrapper.GetTensorInfo(node_inputs[3], zero_info));
       // After split_transpose_2bit: shape reflects transposed dimensions (k_blocks, padded_H) with 2 bit planes
       // Each bit plane has k_blocks rows, with padded_H bits per row packed into bytes
-      uint32_t bytes_per_row = (padded_H + 7) / 8;
+      uint32_t bytes_per_row = static_cast<uint32_t>((padded_H + 7) / 8);
       zero_info.shape = {1, 2, k_blocks, bytes_per_row};
       QnnTensorWrapper zeros_tensor_wrapper(
           zeros_input_name,
@@ -652,7 +652,7 @@ Status MatMulNBitsOpBuilder::ProcessAttributesAndOutputs([[maybe_unused]]QnnMode
   int num_A_dims = node_inputs[0].node_arg.Shape()->dim_size();
   // get how many tokens this MatMulNBits operation will process.
   [[maybe_unused]] int64_t num_tokens = node_inputs[0].node_arg.Shape()->dim(num_A_dims - 2).dim_value();
-  [[maybe_unused]] QnnModelWrapper::ParsedHints hints = qnn_model_wrapper.parse_hints(kernel_params.N.uint32Value, num_tokens, logger);
+  [[maybe_unused]] QnnModelWrapper::ParsedHints hints = qnn_model_wrapper.parse_hints(kernel_params.N.uint32Value, static_cast<int>(num_tokens), logger);
                                                             // get the output tensor information
   std::vector<NodeUnitIODef> node_outputs = node_unit.Outputs();
   ORT_RETURN_IF(node_outputs.size() != 1, "MatMulNBits node should have exactly one output, but found ", node_outputs.size());
