@@ -300,7 +300,7 @@ Status MatMulNBitsOpBuilder::ProcessInputs([[maybe_unused]]QnnModelWrapper& qnn_
         break;
       }
       size_t actual_split_size = std::min(static_cast<size_t>(hints.split_size), remaining_n);
-      
+
       size_t tensor_elements = actual_split_size * kernel_params.K.uint32Value;
 
       // process the B input.
@@ -381,26 +381,26 @@ Status MatMulNBitsOpBuilder::ProcessInputs([[maybe_unused]]QnnModelWrapper& qnn_
       uint32_t k_blocks = kernel_params.K.uint32Value / kernel_params.block.uint32Value;
       size_t zero_points_size = (k_blocks * 2 + 7) / 8;  // bits per row packed into bytes
       size_t zeros_chunk_size = actual_split_size * zero_points_size;
-      
+
       size_t zeros_offset = i * (hints.split_size * zero_points_size);  // Offset uses original split_size stride
       size_t zeros_end = zeros_offset + zeros_chunk_size;
-      
+
       if (zeros_end > zero_values_orig.size()) {
         ORT_THROW("Zeros tensor split exceeds original size");
       }
-      
-      std::vector<uint8_t> zeros_values_split(zero_values_orig.begin() + zeros_offset, 
+
+      std::vector<uint8_t> zeros_values_split(zero_values_orig.begin() + zeros_offset,
                                                zero_values_orig.begin() + zeros_end);
-      
+
       TensorInfo zeros_info = {};
       // print the original tensor info
       ORT_RETURN_IF_ERROR(qnn_model_wrapper.GetTensorInfo(node_inputs[3], zeros_info));
       // Set shape to [actual_split_size, zero_points_size]
       zeros_info.shape = {static_cast<uint32_t>(actual_split_size), static_cast<uint32_t>(zero_points_size)};
-      
-      LOGS(logger, INFO) << "Zeros chunk " << i << ": zeros_chunk_size=" << zeros_chunk_size 
+
+      LOGS(logger, INFO) << "Zeros chunk " << i << ": zeros_chunk_size=" << zeros_chunk_size
                          << ", shape=[" << zeros_info.shape[0] << ", " << zeros_info.shape[1] << "]";
-      
+
       QnnTensorWrapper zeros_input_tensor(
           zeros_input_name,
           QNN_TENSOR_TYPE_STATIC,  // It's an initializer
@@ -432,7 +432,7 @@ Status MatMulNBitsOpBuilder::ProcessInputs([[maybe_unused]]QnnModelWrapper& qnn_
         break;
       }
       size_t actual_split_size = std::min(static_cast<size_t>(hints.split_size), remaining_n);
-      
+
       size_t tensor_elements = actual_split_size * kernel_params.K.uint32Value;
 
       std::vector<uint8_t> b_values;
@@ -445,11 +445,11 @@ Status MatMulNBitsOpBuilder::ProcessInputs([[maybe_unused]]QnnModelWrapper& qnn_
       // split the b_values into chunks of size b_chunk_size.
       size_t b_offset = i * (hints.split_size * kernel_params.K.uint32Value / 4);
       size_t b_end = b_offset + b_chunk_size;
-      
+
       if (b_end > b_values_orig.size()) {
         ORT_THROW("B tensor shuffle split exceeds original size");
       }
-      
+
       b_values.assign(b_values_orig.begin() + b_offset, b_values_orig.begin() + b_end);
 
       // Copy b_values to an aligned int32_t buffer for split_tile_2bit
@@ -457,14 +457,14 @@ Status MatMulNBitsOpBuilder::ProcessInputs([[maybe_unused]]QnnModelWrapper& qnn_
       // split_tile_2bit uses tiling with 128-row tiles, so H must be padded to a multiple of 128
       // The formula (y/128)*W*128 + ... assumes tiles of 128 rows
       size_t padded_H = ((actual_split_size + 127) / 128) * 128;
-      
+
       // Pad the input b_values to padded_H rows with zeros
       // Original has actual_split_size rows, each row has K elements at 2 bits each
       size_t original_bits = actual_split_size * kernel_params.K.uint32Value * 2;
       size_t padded_bits = padded_H * kernel_params.K.uint32Value * 2;
       size_t padded_bytes = (padded_bits + 7) / 8;
       size_t padded_int32s = (padded_bytes + 3) / 4;
-      
+
       std::vector<int32_t> b_values_padded(padded_int32s, 0);  // Zero-initialized for padding
       // Copy original data - it's stored row-by-row at 2 bits per element
       // For actual_split_size rows, we have (actual_split_size * K * 2) bits = (actual_split_size * K / 4) bytes
@@ -476,12 +476,12 @@ Status MatMulNBitsOpBuilder::ProcessInputs([[maybe_unused]]QnnModelWrapper& qnn_
       size_t output_bits = padded_H * kernel_params.K.uint32Value * 2;
       size_t output_int32s = (output_bits + 31) / 32;
       std::vector<int32_t> b_values_shuff_32(output_int32s, 0);
-      
+
       // Pass padded_H to split_tile_2bit so tiling and bit plane layout matches kernel expectations
       split_tile_2bit(b_values_shuff_32.data(), b_values_padded.data(), kernel_params.K.uint32Value, padded_H);
 
       LOGS(logger, INFO) << "B tiled and split with padded_H=" << padded_H;
-      
+
       uint8_t* bytes = reinterpret_cast<uint8_t*>(b_values_shuff_32.data());
       size_t output_bytes = output_int32s * sizeof(int32_t);
       std::vector<uint8_t> b_values_shuff(bytes, bytes + output_bytes);
@@ -512,11 +512,11 @@ Status MatMulNBitsOpBuilder::ProcessInputs([[maybe_unused]]QnnModelWrapper& qnn_
       // split the scale_values into chunks of size scale_chunk_size.
       size_t scale_offset = i * (2 * hints.split_size * kernel_params.K.uint32Value / 64);
       size_t scale_end = scale_offset + scale_chunk_size;
-      
+
       if (scale_end > scale_values_orig.size()) {
         ORT_THROW("Scale tensor shuffle split exceeds original size");
       }
-      
+
       scale_values.assign(scale_values_orig.begin() + scale_offset, scale_values_orig.begin() + scale_end);
 
       // ensure allignment of scale_values to 16 bits
@@ -524,7 +524,7 @@ Status MatMulNBitsOpBuilder::ProcessInputs([[maybe_unused]]QnnModelWrapper& qnn_
       // Input is (actual_split_size, K/block), output is (K/block, padded_H) with zero-padding
       size_t num_scale_elements = (kernel_params.K.uint32Value / kernel_params.block.uint32Value) * padded_H;
       std::vector<uint16_t> scale_values_shuff_16(num_scale_elements, 0);  // Zero-initialize for padding
-      
+
       // Transpose and pad: for each output row (K/block rows), copy actual_split_size values
       uint16_t* scale_data_16 = reinterpret_cast<uint16_t*>(scale_values.data());
       size_t rows_out = kernel_params.K.uint32Value / kernel_params.block.uint32Value;
@@ -563,16 +563,16 @@ Status MatMulNBitsOpBuilder::ProcessInputs([[maybe_unused]]QnnModelWrapper& qnn_
       uint32_t k_blocks = kernel_params.K.uint32Value / kernel_params.block.uint32Value;
       size_t zero_points_size = (k_blocks * 2 + 7) / 8;  // bits per row packed into bytes
       size_t zeros_chunk_size = actual_split_size * zero_points_size;
-      
+
       LOGS(logger, INFO) << "Zeros chunk size: " << zeros_chunk_size << " (actual_split_size: " << actual_split_size << ")";
-      
+
       size_t zeros_offset = i * (hints.split_size * zero_points_size);  // Offset uses original split_size stride
       size_t zeros_end = zeros_offset + zeros_chunk_size;
-      
+
       if (zeros_end > zero_values_orig.size()) {
         ORT_THROW("Zeros tensor shuffle split exceeds original size");
       }
-      
+
       zero_values.assign(zero_values_orig.begin() + zeros_offset, zero_values_orig.begin() + zeros_end);
 
       // Repack zeros from row-padded format to densely packed format, then pad to padded_H
@@ -580,7 +580,7 @@ Status MatMulNBitsOpBuilder::ProcessInputs([[maybe_unused]]QnnModelWrapper& qnn_
       // Output: k_blocks * padded_H 2-bit values packed densely (with zero-padding for extra rows)
       size_t dense_size = (k_blocks * padded_H * 2 + 7) / 8;  // Use padded_H
       std::vector<uint8_t> zero_values_dense(dense_size, 0);  // Zero-initialize for padding
-      
+
       size_t output_bit_idx = 0;
       for (size_t row = 0; row < padded_H; ++row) {
         for (size_t col = 0; col < k_blocks; ++col) {
@@ -590,7 +590,7 @@ Status MatMulNBitsOpBuilder::ProcessInputs([[maybe_unused]]QnnModelWrapper& qnn_
             size_t input_byte_idx = input_bit_idx / 8;
             size_t input_bit_offset = input_bit_idx % 8;
             uint8_t value = (zero_values[input_byte_idx] >> input_bit_offset) & 0x3;
-            
+
             // Write to densely packed output
             size_t output_byte_idx = output_bit_idx / 8;
             size_t output_bit_offset = output_bit_idx % 8;
@@ -607,7 +607,7 @@ Status MatMulNBitsOpBuilder::ProcessInputs([[maybe_unused]]QnnModelWrapper& qnn_
       size_t output_bits_per_plane = k_blocks * padded_H;
       size_t output_bytes_per_plane = (output_bits_per_plane + 7) / 8;
       size_t output_total_bytes = 2 * output_bytes_per_plane;
-      
+
       // Allocate output buffer with correct size
       std::vector<int32_t> zero_values_shuff_32((output_total_bytes + 3) / sizeof(int32_t), 0);
       split_transpose_2bit(zero_values_shuff_32.data(), reinterpret_cast<int32_t*>(zero_values_dense.data()), kernel_params.K.uint32Value / kernel_params.block.uint32Value, padded_H);
@@ -1294,15 +1294,7 @@ Status MatMulNBitsOpBuilder::ProcessAttributesAndOutputs([[maybe_unused]]QnnMode
                                                           std::move(param_tensor_names_mul), do_op_validation),
                           "Failed to add fused Matmul node.");
       }
-
-      // So it tries to make this, and THEN immediately things are bad
     }
-
-    // Need to do a double concat here
-    // First concat on the height axis, then on the width axis from the weights
-    // Or the other way around? Not sure what is best.
-    // for now, height then width:
-    // For each height set
 
     if (hints.split_count > 1 && hints.act_tile_count > 1) {
       LOGS(logger, INFO) << "Concatenating the outputs of the MatMul nodes.";
