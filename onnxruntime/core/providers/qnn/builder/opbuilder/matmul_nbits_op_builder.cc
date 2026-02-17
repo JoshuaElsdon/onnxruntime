@@ -1261,7 +1261,9 @@ Status MatMulNBitsOpBuilder::ProcessAttributesAndOutputs([[maybe_unused]]QnnMode
 
           Qnn_Scalar_t t1 = QNN_SCALAR_INIT;
           t1.dataType = QNN_DATATYPE_BOOL_8;
-          t1.bool8Value = 0;  // transpose the wieght input.
+          // Weights are in (N, K) layout, need to transpose to (K, N) for MatMul
+          // Unless kernel_transpose is true, then kernel already outputs (K, N)
+          t1.bool8Value = hints.kernel_transpose ? 0 : 1;
           QnnParamWrapper p1(node_unit.Index(), node_unit.Name() + std::to_string(i) + std::to_string(j), QNN_OP_MAT_MUL_PARAM_TRANSPOSE_IN1, t1);
           param_tensor_names_mul.push_back(p1.GetParamTensorName());
           qnn_model_wrapper.AddParamWrapper(std::move(p1));
@@ -1320,7 +1322,8 @@ Status MatMulNBitsOpBuilder::ProcessAttributesAndOutputs([[maybe_unused]]QnnMode
             
             Qnn_Scalar_t t1_2 = QNN_SCALAR_INIT;
             t1_2.dataType = QNN_DATATYPE_BOOL_8;
-            t1_2.bool8Value = 0;
+            // Same transpose logic as main MatMul
+            t1_2.bool8Value = hints.kernel_transpose ? 0 : 1;
             QnnParamWrapper p1_2(node_unit.Index(), node_unit.Name() + "_res_" + std::to_string(i) + "_" + std::to_string(j), QNN_OP_MAT_MUL_PARAM_TRANSPOSE_IN1, t1_2);
             param_tensor_names_mul2.push_back(p1_2.GetParamTensorName());
             qnn_model_wrapper.AddParamWrapper(std::move(p1_2));
